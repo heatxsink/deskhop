@@ -14,6 +14,22 @@
 _Static_assert(MAX_DEVICES <= CFG_TUH_DEVICE_MAX,
                "MAX_DEVICES must not exceed CFG_TUH_DEVICE_MAX");
 
+#ifdef DH_DEBUG_TRACKPAD
+#define APPLE_VID 0x05AC
+
+static void hex_dump(const char *label, const uint8_t *data, int len) {
+    dh_debug_printf("%s (len=%d):\n", label, len);
+    char line[80];
+    for (int i = 0; i < len; i += 16) {
+        int pos = snprintf(line, sizeof(line), "  %04x:", i);
+        for (int j = 0; j < 16 && i + j < len; j++) {
+            pos += snprintf(line + pos, sizeof(line) - pos, " %02x", data[i + j]);
+        }
+        dh_debug_printf("%s\n", line);
+    }
+}
+#endif
+
 /* ================================================== *
  * ===========  TinyUSB Device Callbacks  =========== *
  * ================================================== */
@@ -148,6 +164,16 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
     if (dev_addr > MAX_DEVICES || instance >= MAX_INTERFACES)
         return;
 
+#ifdef DH_DEBUG_TRACKPAD
+    {
+        uint16_t vid = 0, pid = 0;
+        tuh_vid_pid_get(dev_addr, &vid, &pid);
+        dh_debug_printf("HID mount: dev_addr=%u instance=%u itf_protocol=%u vid=%04x pid=%04x\n",
+                        dev_addr, instance, itf_protocol, vid, pid);
+        hex_dump("HID descriptor", desc_report, desc_len);
+    }
+#endif
+
     /* Get interface information */
     hid_interface_t *iface = &global_state.iface[dev_addr-1][instance];
 
@@ -214,6 +240,18 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
 
     if (dev_addr > MAX_DEVICES || instance >= MAX_INTERFACES)
         return;
+
+#ifdef DH_DEBUG_TRACKPAD
+    {
+        uint16_t vid = 0, pid = 0;
+        tuh_vid_pid_get(dev_addr, &vid, &pid);
+        if (vid == APPLE_VID) {
+            dh_debug_printf("HID report %04x:%04x dev_addr=%u instance=%u\n",
+                            vid, pid, dev_addr, instance);
+            hex_dump("  report", report, len);
+        }
+    }
+#endif
 
     hid_interface_t *iface = &global_state.iface[dev_addr-1][instance];
 

@@ -8,6 +8,7 @@ set(VERSION_MINOR 77)
 ## Release Type Selection
 option(DH_DEBUG "Build a debug version" OFF)
 option(DH_DEBUG_CDC_FLASH "Enable CDC command to trigger bootloader mode" OFF)
+option(DH_DEBUG_TRACKPAD "Log HID descriptors and Apple HID reports for trackpad work (requires DH_DEBUG)" OFF)
 
 ## Hardware Configuration
 set(DP_PIN_DEFAULT 14 CACHE STRING "Default USB D+ Pin Number")
@@ -124,6 +125,13 @@ endif()
 
 if (DH_DEBUG_CDC_FLASH)
   add_definitions(-DDH_DEBUG_CDC_FLASH)
+endif()
+
+if (DH_DEBUG_TRACKPAD)
+  if (NOT DH_DEBUG)
+    message(FATAL_ERROR "DH_DEBUG_TRACKPAD requires DH_DEBUG (CDC log sink). Re-run cmake with -DDH_DEBUG=ON.")
+  endif()
+  add_definitions(-DDH_DEBUG_TRACKPAD)
 endif()
   
 target_include_directories(${binary} PUBLIC ${COMMON_INCLUDES})
