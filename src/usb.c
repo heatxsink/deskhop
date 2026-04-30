@@ -326,14 +326,32 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
         bool consumed = false;
         if (mt_decode_report(report, len, &frame)) {
             consumed = true;
+
+            /* Trackpad has only one physical button. We translate it to LEFT
+               or RIGHT at click-down based on how many fingers were on the
+               surface at that moment, then keep it sticky for the duration
+               of the held click. Two-finger click-down = right click;
+               one-finger click-down = left click. */
+            static bool prev_phys_click = false;
+            static mt_button_t held_button = MT_BTN_NONE;
+
+            bool phys_click_now = (report[1] & 0x01) != 0;
+            if (phys_click_now && !prev_phys_click) {
+                held_button = (frame.finger_count >= 2) ? MT_BTN_RIGHT : MT_BTN_LEFT;
+            } else if (!phys_click_now && prev_phys_click) {
+                held_button = MT_BTN_NONE;
+            }
+            prev_phys_click = phys_click_now;
+
             int32_t dx = 0, dy = 0, wheel = 0, pan = 0;
             mt_swipe_t swipe = MT_SWIPE_NONE;
-            bool moved = mt_gesture_step(&mt_state, &frame,
+            bool moved = mt_gesture_step(&mt_state, &frame, held_button,
                                          &dx, &dy, &wheel, &pan, &swipe);
 
-            /* Linux's hid-magicmouse reads data[1] as the click bitmap for
-               trackpad2 (BTN_MOUSE = data[1] & 1). We mirror that. */
-            uint8_t buttons = report[1] & 0x07;
+            /* What we report to the host: the translated button (which
+               persists for the duration of the held click), not the raw
+               trackpad bit. */
+            uint8_t buttons = (uint8_t)held_button;
             bool buttons_changed = (buttons != global_state.mouse_buttons);
 
 #ifndef DH_TRACKPAD_PHASE1_SKIP_EMIT

@@ -83,6 +83,7 @@ static int find_prev(mt_gesture_state_t *s, uint8_t id) {
 #define SWIPE_THRESHOLD_X  1200
 
 bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
+                     mt_button_t button_held,
                      int32_t *out_move_x, int32_t *out_move_y,
                      int32_t *out_wheel, int32_t *out_pan,
                      mt_swipe_t *out_swipe) {
@@ -122,27 +123,42 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
             emit = (*out_move_x != 0 || *out_move_y != 0);
         }
     } else if (frame->finger_count == 2) {
-        /* Average the two fingers' deltas. */
-        int32_t sum_dx = 0, sum_dy = 0;
-        int matched = 0;
-        for (int i = 0; i < 2; i++) {
-            int prev_idx = find_prev(s, frame->fingers[i].finger_id);
-            if (prev_idx < 0) continue;
-            sum_dx += frame->fingers[i].x - s->prev_x[prev_idx];
-            sum_dy += frame->fingers[i].y - s->prev_y[prev_idx];
-            matched++;
-        }
-        if (matched == 2) {
-            int32_t dx = sum_dx / 2;
-            int32_t dy = sum_dy / 2;
-
-            /* Wheel sign chosen empirically: natural-scroll on macOS expects
-               two-finger swipe up to scroll page content up. Our decoder
-               negates trackpad Y, so swipe-up gives positive dy; an unflipped
-               wheel reads inverted on the host. Negate. */
-            *out_wheel = -dy / SCROLL_DIV;
-            *out_pan   = dx / SCROLL_DIV;
-            emit = (*out_wheel != 0 || *out_pan != 0);
+        if (button_held == MT_BTN_LEFT) {
+            /* Drag mode: cursor follows the SECOND finger. The first finger is
+               anchoring the click; user adds a second finger to drag. */
+            int prev_idx = find_prev(s, frame->fingers[1].finger_id);
+            if (prev_idx >= 0) {
+                int32_t dx = frame->fingers[1].x - s->prev_x[prev_idx];
+                int32_t dy = frame->fingers[1].y - s->prev_y[prev_idx];
+                *out_move_x = dx / POINTER_DIV;
+                *out_move_y = dy / POINTER_DIV;
+                emit = (*out_move_x != 0 || *out_move_y != 0);
+            }
+        } else if (button_held == MT_BTN_RIGHT) {
+            /* Right click held: don't emit any motion. Cursor should stay put
+               while the right-click context menu is open. */
+        } else {
+            /* No click held: scroll. Average the two fingers' deltas. */
+            int32_t sum_dx = 0, sum_dy = 0;
+            int matched = 0;
+            for (int i = 0; i < 2; i++) {
+                int prev_idx = find_prev(s, frame->fingers[i].finger_id);
+                if (prev_idx < 0) continue;
+                sum_dx += frame->fingers[i].x - s->prev_x[prev_idx];
+                sum_dy += frame->fingers[i].y - s->prev_y[prev_idx];
+                matched++;
+            }
+            if (matched == 2) {
+                int32_t dx = sum_dx / 2;
+                int32_t dy = sum_dy / 2;
+                /* Wheel sign chosen empirically: natural-scroll on macOS expects
+                   two-finger swipe up to scroll page content up. Our decoder
+                   negates trackpad Y, so swipe-up gives positive dy; an unflipped
+                   wheel reads inverted on the host. Negate. */
+                *out_wheel = -dy / SCROLL_DIV;
+                *out_pan   = dx / SCROLL_DIV;
+                emit = (*out_wheel != 0 || *out_pan != 0);
+            }
         }
     } else if (frame->finger_count == 3) {
         /* 3-finger swipe: accumulate the per-frame summed dx across all three
