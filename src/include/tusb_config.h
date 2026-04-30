@@ -88,6 +88,11 @@
  *  Settings for the CDC (Communication Device Class) for serial communication.
  *==============================================================================*/
 
+// dh_debug_printf is always declared so callers compile cleanly with or
+// without DH_DEBUG. Definition lives in utils.c -- a no-op stub when
+// DH_DEBUG is off, the real CDC writer when on.
+extern int dh_debug_printf(const char *__restrict __format, ...);
+
 #ifdef DH_DEBUG
 
 // Enable CDC class for debugging over serial.
@@ -95,7 +100,6 @@
 
 // Use a custom debug printf function.
 #define CFG_TUSB_DEBUG_PRINTF dh_debug_printf
-extern int dh_debug_printf(const char *__restrict __format, ...);
 
 // Buffer sizes for CDC RX and TX.
 #define CFG_TUD_CDC_RX_BUFSIZE 64

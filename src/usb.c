@@ -287,12 +287,15 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
        payload here is the proprietary frame format, not the standard mouse
        layout the descriptor advertises. Decode it ourselves and feed the
        result through the existing mouse pipeline + (for swipes) the keyboard
-       pipeline. Pre-activation reports won't decode as multi-touch frames
-       (length mismatch) so we just drop them -- pointer movement returns
-       once activation lands. */
+       pipeline. Pre-activation reports (8-byte mouse-emulation) WON'T decode
+       as multi-touch frames; we fall through to the standard mouse pipeline
+       below so the trackpad behaves like a generic mouse until activation
+       lands -- and continues to work even if activation fails for any reason. */
     if (iface->vendor_id == APPLE_VID && iface->product_id == MAGIC_TRACKPAD_PID) {
         mt_frame_t frame;
+        bool consumed = false;
         if (mt_decode_report(report, len, &frame)) {
+            consumed = true;
             int32_t dx = 0, dy = 0, wheel = 0, pan = 0;
             mt_swipe_t swipe = MT_SWIPE_NONE;
             bool moved = mt_gesture_step(&mt_state, &frame,
@@ -355,8 +358,14 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
             }
 #endif
         }
-        tuh_hid_receive_report(dev_addr, instance);
-        return;
+        if (consumed) {
+            tuh_hid_receive_report(dev_addr, instance);
+            return;
+        }
+        /* Decode failed -- trackpad is in mouse-emulation mode (activation
+           hasn't landed yet, or failed entirely). Fall through to the
+           standard mouse pipeline so the user gets at least basic cursor
+           movement. */
     }
 
     /* Calculate a device index that distinguishes between different devices
