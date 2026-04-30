@@ -127,11 +127,11 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
             int32_t dx = sum_dx / 2;
             int32_t dy = sum_dy / 2;
 
-            /* Vertical wheel: positive wheel = scroll up on most hosts.
-               Trackpad Y is negated by decoder, so user swiping up the pad
-               (fingers moving away from the user) gives positive dy here.
-               That should produce positive wheel. */
-            *out_wheel = dy / SCROLL_DIV;
+            /* Wheel sign chosen empirically: natural-scroll on macOS expects
+               two-finger swipe up to scroll page content up. Our decoder
+               negates trackpad Y, so swipe-up gives positive dy; an unflipped
+               wheel reads inverted on the host. Negate. */
+            *out_wheel = -dy / SCROLL_DIV;
             *out_pan   = dx / SCROLL_DIV;
             emit = (*out_wheel != 0 || *out_pan != 0);
         }
