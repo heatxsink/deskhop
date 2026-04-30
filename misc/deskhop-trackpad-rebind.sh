@@ -1,32 +1,37 @@
 #!/bin/sh
 # Manual rebind helper -- run as root after plugging in the trackpad.
-# If this script makes the keyboard work, we know the rebind logic is
-# correct and the udev rule just needs better event timing.
+#
+# We need to detach hid-magicmouse from interfaces 0 (keyboard) and 1
+# (relmouse) and attach hid-generic instead. Plain unbind+bind races against
+# the kernel's autoprobe, which immediately re-binds magicmouse (most
+# specific VID/PID match) before our explicit bind to hid-generic can fire.
+#
+# Trick: temporarily disable autoprobe on the HID bus, do the rebind, then
+# restore. While autoprobe is off, the kernel won't auto-attach drivers --
+# so our explicit bind to hid-generic is the one that takes.
 
-set -x  # echo every command for diagnostic visibility
+set -x
 
-ls -l /sys/bus/hid/drivers/magicmouse/ | grep -E "05AC|0265" || echo "no magicmouse-bound deskhop HIDs found"
+prev_autoprobe=$(cat /sys/bus/hid/drivers_autoprobe 2>/dev/null || echo 1)
+echo 0 > /sys/bus/hid/drivers_autoprobe
 
 for hid in /sys/bus/hid/drivers/magicmouse/0003:05AC:0265.*; do
     [ -L "$hid" ] || continue
     name=$(basename "$hid")
-    # The hid device is a symlink under the driver dir.  Resolve to the real
-    # /sys/devices path, then walk up one level to reach the USB interface
-    # device that carries bInterfaceNumber.
     real_path=$(readlink -f "$hid")
     iface_dir=$(dirname "$real_path")
     iface_num=$(cat "$iface_dir/bInterfaceNumber" 2>/dev/null)
 
-    echo "found $name -> $real_path (interface=$iface_num)"
-
     case "$iface_num" in
         00|01)
-            echo "rebinding $name (interface $iface_num) magicmouse -> hid-generic"
+            echo "rebinding $name (iface $iface_num) magicmouse -> hid-generic"
             echo "$name" > /sys/bus/hid/drivers/magicmouse/unbind
             echo "$name" > /sys/bus/hid/drivers/hid-generic/bind
             ;;
         *)
-            echo "leaving $name (interface $iface_num) bound to magicmouse"
+            echo "leaving $name (iface $iface_num) bound to magicmouse"
             ;;
     esac
 done
+
+echo "$prev_autoprobe" > /sys/bus/hid/drivers_autoprobe
