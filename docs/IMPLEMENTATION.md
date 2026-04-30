@@ -193,7 +193,13 @@ This bypasses `extract_report_values()` (which would misread the descriptor) and
 
 ---
 
-## Phase 2 — Apple VID/PID spoof + raw multi-touch passthrough
+## Phase 2 — Apple VID/PID spoof + raw multi-touch passthrough (ABANDONED)
+
+> **Status: abandoned.** The descriptor swap worked at the binding layer but `hid-magicmouse` claims all HID interfaces of any Apple-VID device, breaking deskhop's keyboard. No userspace workaround possible (`hid-generic` refuses to bind when a more-specific driver matches). All firmware changes were reverted in commits `5c747ab` and `8303bd0`. Source captures and protocol research stay because the same HID descriptors and activation payload feed Path A. See DESIGN.md "Status" for the abandonment narrative.
+
+The original Phase 2 plan is preserved verbatim below as a record. Do not implement.
+
+
 
 Make macOS see a real Apple Magic Trackpad. macOS binds its native driver. Tap-to-click, gestures, the System Settings pane all work natively. Deskhop becomes a transport layer for the trackpad's proprietary HID reports — no decoding, no synthesis.
 
@@ -412,6 +418,100 @@ Once Steps 2.1-2.11 are validated end-to-end:
 - Step 2.13 (validation across OSes): half a day with hardware.
 
 **Total: ~4-5 days of focused work.** Two commit-worthy milestones: "trackpad descriptor + IN report passthrough working" and "OUT/feature reports + lifecycle complete".
+
+---
+
+## Path A — port libinput's tap state machine
+
+Faithfully translate `src/evdev-mt-touchpad-tap.c` from [libinput](https://gitlab.freedesktop.org/libinput/libinput) into the firmware. The state machine is ~1700 lines, 30+ states, MIT licensed. Done well, this gives us tap-to-click, tap-and-drag, drag-lock, double-tap, multi-finger tap recognition, and the dozens of edge cases libinput has accumulated over a decade — without us inventing any of them.
+
+Gated behind `DH_TRACKPAD_TAP_TO_CLICK` (OFF by default). Default builds are unaffected.
+
+### Source files to translate
+
+| libinput source | Our target | Purpose |
+|---|---|---|
+| `src/evdev-mt-touchpad-tap.c` | `src/magic_trackpad_tap.c` | Core state machine and event handlers |
+| `src/evdev-mt-touchpad.h` (tap-related fields) | `src/include/magic_trackpad_tap.h` | State enum, event enum, per-touch tap state |
+
+### Translation rules
+
+1. **State names verbatim.** `TAP_STATE_IDLE`, `TAP_STATE_TOUCH`, `TAP_STATE_1FGTAP_DRAGGING`, etc. Don't rename, don't collapse. Anyone debugging will be reading libinput's source side-by-side.
+2. **Event names verbatim.** `TAP_EVENT_TOUCH`, `TAP_EVENT_MOTION`, `TAP_EVENT_RELEASE`, `TAP_EVENT_BUTTON`, `TAP_EVENT_TIMEOUT`, `TAP_EVENT_THUMB`, `TAP_EVENT_PALM`, `TAP_EVENT_PALM_UP`. Same.
+3. **Handler functions verbatim.** One handler per state: `tp_tap_idle_handle_event`, `tp_tap_touch_handle_event`, etc. Don't merge, don't simplify. Internal state transitions follow libinput exactly.
+4. **Replace `struct tp_dispatch *tp` with our `mt_gesture_state_t *s`.** Add the libinput-tap-related fields to our state struct (or a sub-struct).
+5. **Replace `struct tp_touch *t` with `mt_finger_t *finger` plus per-touch tap state.** The tap state machine tracks per-touch flags like `is_thumb`, `is_palm`, `state`. Add a small parallel structure indexed by finger ID or slot.
+6. **Replace `tp_tap_set_timer(tp, time + DEFAULT_TAP_TIMEOUT_PERIOD)` with `s->tap.timer_us = now_us + DEFAULT_TAP_TIMEOUT_PERIOD_US`.** Polling-based. The caller of the gesture step checks `now_us >= s->tap.timer_us` and synthesizes a `TAP_EVENT_TIMEOUT` when applicable.
+7. **Replace `tp_tap_clear_timer(tp)` with `s->tap.timer_us = 0`** (or `UINT32_MAX`, sentinel).
+8. **Replace `tp_tap_post_button(tp, button, time, pressed)` with our queue path.** Buttons go through `output_mouse_report` with the button bit set.
+9. **No new logic.** If a corner case feels wrong, look at libinput's source first. Bring our port closer, not further.
+
+### Step A.1 — Skeleton
+
+- New header `src/include/magic_trackpad_tap.h` with `enum tp_tap_state`, `enum tap_event`, the `tp_tap` sub-struct (members: `state`, `timer_us`, `tap_count`, `enabled`, etc., translated from libinput's), and a per-touch tap state struct `tp_touch_tap_state` (members: `state`, `is_thumb`, `is_palm`, etc.).
+- New stub `src/magic_trackpad_tap.c` with the dispatcher `tp_tap_handle_event` and stub bodies for each state's `tp_tap_*_handle_event`.
+- Compiles clean with `DH_TRACKPAD_TAP_TO_CLICK=ON`. State machine compiles but does nothing useful.
+
+### Step A.2 — IDLE / TOUCH / HOLD
+
+Translate the basic touch flow. After this, single-finger tap → left click works.
+
+### Step A.3 — TAPPED / DRAGGING_OR_DOUBLETAP / DRAGGING
+
+Tap-and-drag: a tap immediately followed by motion holds the button down during the motion. Translates the entire double-tap-vs-drag-disambiguation tree.
+
+### Step A.4 — Drag lock
+
+`DRAGGING_WAIT` and `DRAGGING_OR_TAP`. Brief lift during a drag preserves the held button if a new touch arrives within the lock window.
+
+### Step A.5 — Multi-finger tap (TOUCH_2 / TOUCH_3 family)
+
+Two-finger tap → right click. Three-finger tap → middle click (configurable later).
+
+### Step A.6 — DEAD state and palm/thumb handling
+
+Most of the cleanup logic. Required for proper palm rejection.
+
+### Step A.7 — Wire to gesture step
+
+In `mt_gesture_step`, drive the state machine each frame:
+- New touch (finger appears in current frame, not in previous): `tp_tap_handle_event(TAP_EVENT_TOUCH)`
+- Motion past threshold: `tp_tap_handle_event(TAP_EVENT_MOTION)`
+- Touch lift (finger gone in current frame, was in previous): `tp_tap_handle_event(TAP_EVENT_RELEASE)`
+- Physical click rising edge: `tp_tap_handle_event(TAP_EVENT_BUTTON)` with pressed=true
+- Physical click falling edge: `TAP_EVENT_BUTTON` with pressed=false
+- `now_us >= s->tap.timer_us`: `TAP_EVENT_TIMEOUT`
+
+### Step A.8 — Validation
+
+Test each behavior libinput documents:
+- Single tap → left click
+- Two-finger tap → right click
+- Three-finger tap → middle click
+- Tap-then-drag (no lift between) → button held during motion
+- Double-tap → two click events, OS recognizes as double
+- Drag with lift-and-return within lock window → continues drag
+- Hold (touch + no motion + > tap timeout) → no tap, palm/intentional rest
+- Movement during touch → no tap
+
+Each should match libinput's behavior on a reference Linux machine.
+
+### Effort estimate
+
+Step A.1: ~1 hour (skeleton, all stubs, builds).
+Step A.2: ~1 hour (basic tap working).
+Step A.3: ~1.5 hours (drag complexity).
+Step A.4-A.6: ~2 hours combined.
+Step A.7-A.8: ~1 hour.
+
+**Total: 6-8 hours**, broken across multiple sessions. Each step is committable progress.
+
+### Flash budget concern
+
+Default Phase 1 build: 188 KB / 188 KB (100% of partition). Path A code estimated 6-12 KB compiled. Default builds (with `DH_TRACKPAD_TAP_TO_CLICK=OFF`) pay zero. Builds with the flag on may exceed the partition; mitigations if so:
+- Strip unused libinput-port states (e.g., 3-finger family if not needed)
+- Increase `FLASH` partition in `misc/memory_map.ld` (shrinks `FW_STAGING`; loses dual-bank firmware-update guarantee)
+- Compile-time strip palm/thumb handling (acceptable on Apple trackpad which doesn't report palm/thumb anyway)
 
 ---
 
