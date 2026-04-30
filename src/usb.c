@@ -340,6 +340,7 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
             uint8_t buttons = report[1] & 0x07;
             bool buttons_changed = (buttons != global_state.mouse_buttons);
 
+#ifndef DH_DEBUG_TRACKPAD_BISECT_SKIP_EMIT
             if (moved || buttons_changed) {
                 mouse_values_t values = {
                     .move_x  = dx,
@@ -354,7 +355,10 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                 if (dir != NONE) do_screen_switch(&global_state, dir);
                 global_state.mouse_buttons = buttons;
             }
+#endif
+            (void)moved; (void)buttons; (void)buttons_changed;
 
+#ifndef DH_DEBUG_TRACKPAD_BISECT_SKIP_EMIT
             if (swipe != MT_SWIPE_NONE) {
                 /* Workspace / Spaces switching:
                      GNOME (Linux) default = Ctrl+Alt+Left / Ctrl+Alt+Right
@@ -380,6 +384,8 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                     queue_packet((uint8_t *)&release, KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
                 }
             }
+#endif
+            (void)swipe;
 
 #ifdef DH_DEBUG_TRACKPAD
             /* Per-frame visibility on 3-finger gestures, throttled to 1 in 8

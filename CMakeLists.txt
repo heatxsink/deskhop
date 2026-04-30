@@ -12,6 +12,7 @@ option(DH_DEBUG_TRACKPAD "Log HID descriptors and Apple HID reports for trackpad
 option(DH_DEBUG_TRACKPAD_LED "Toggle the onboard LED on every Magic Trackpad report received (no CDC needed)" OFF)
 option(DH_DEBUG_TRACKPAD_BISECT_SKIP_ACTIVATION "Skip sending the trackpad activation feature report (bisect aid)" OFF)
 option(DH_DEBUG_TRACKPAD_BISECT_SKIP_DECODE "Skip the trackpad multi-touch fast path entirely (bisect aid)" OFF)
+option(DH_DEBUG_TRACKPAD_BISECT_SKIP_EMIT "Run trackpad decode/gesture but don't emit mouse/kbd reports (bisect aid)" OFF)
 
 ## Hardware Configuration
 set(DP_PIN_DEFAULT 14 CACHE STRING "Default USB D+ Pin Number")
@@ -148,6 +149,10 @@ endif()
 
 if (DH_DEBUG_TRACKPAD_BISECT_SKIP_DECODE)
   add_definitions(-DDH_DEBUG_TRACKPAD_BISECT_SKIP_DECODE)
+endif()
+
+if (DH_DEBUG_TRACKPAD_BISECT_SKIP_EMIT)
+  add_definitions(-DDH_DEBUG_TRACKPAD_BISECT_SKIP_EMIT)
 endif()
   
 target_include_directories(${binary} PUBLIC ${COMMON_INCLUDES})
