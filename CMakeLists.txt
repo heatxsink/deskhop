@@ -12,6 +12,8 @@ option(DH_DEBUG_TRACKPAD "Log HID descriptors and Apple HID reports for trackpad
 option(DH_DEBUG_TRACKPAD_LED "Toggle the onboard LED on every Magic Trackpad report received (no CDC needed)" OFF)
 option(DH_TRACKPAD_PHASE1 "Enable Phase 1 trackpad gesture translation (activation + decode + scroll/swipe synthesis). OFF in prod -- Phase 1 has a watchdog reboot bug under investigation." OFF)
 option(DH_TRACKPAD_PHASE1_SKIP_EMIT "Bisect aid: with PHASE1=ON, run decode + gesture state machine but skip the mouse/keyboard emit phase. If reboot stops with this set, the bug is in emit." OFF)
+option(DH_TRACKPAD_PHASE1_NO_SCREEN_SWITCH "Bisect aid: emit mouse reports but do not call do_screen_switch on edge crossings." OFF)
+option(DH_TRACKPAD_PHASE1_NO_OUTPUT_REPORT "Bisect aid: run update_mouse_position + create_mouse_report but do not call output_mouse_report." OFF)
 
 ## Hardware Configuration
 set(DP_PIN_DEFAULT 14 CACHE STRING "Default USB D+ Pin Number")
@@ -151,6 +153,14 @@ if (DH_TRACKPAD_PHASE1_SKIP_EMIT)
     message(FATAL_ERROR "DH_TRACKPAD_PHASE1_SKIP_EMIT only meaningful with DH_TRACKPAD_PHASE1=ON.")
   endif()
   add_definitions(-DDH_TRACKPAD_PHASE1_SKIP_EMIT)
+endif()
+
+if (DH_TRACKPAD_PHASE1_NO_SCREEN_SWITCH)
+  add_definitions(-DDH_TRACKPAD_PHASE1_NO_SCREEN_SWITCH)
+endif()
+
+if (DH_TRACKPAD_PHASE1_NO_OUTPUT_REPORT)
+  add_definitions(-DDH_TRACKPAD_PHASE1_NO_OUTPUT_REPORT)
 endif()
   
 target_include_directories(${binary} PUBLIC ${COMMON_INCLUDES})

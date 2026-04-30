@@ -347,9 +347,14 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                 };
                 enum screen_pos_e dir = update_mouse_position(&global_state, &values);
                 mouse_report_t mr = create_mouse_report(&global_state, &values);
+#ifndef DH_TRACKPAD_PHASE1_NO_OUTPUT_REPORT
                 output_mouse_report(&mr, &global_state);
+#endif
+#ifndef DH_TRACKPAD_PHASE1_NO_SCREEN_SWITCH
                 if (dir != NONE) do_screen_switch(&global_state, dir);
+#endif
                 global_state.mouse_buttons = buttons;
+                (void)mr; (void)dir;
             }
 #endif
             (void)moved; (void)buttons; (void)buttons_changed;
