@@ -35,11 +35,17 @@ Deskhop's synthesized generic-mouse interface defeats both bind paths:
 - Gesture decoding for non-Apple touchpads (Logitech, Synaptics, etc.).
 - Full passthrough KVM mode for arbitrary HID devices (issue #207 option 2 — separate effort with broader scope).
 
-## Status (revised)
+## Status
 
-Phase 1 was implemented and partially worked, but in production builds (no `DH_DEBUG`) it triggers a watchdog reboot loop on trackpad mount. Bisection narrowed the cause to the multi-touch fast-path running on activated reports — most likely in the gesture/emit pipeline, but the exact line wasn't isolated before pivoting. Phase 1 has been gated behind a `DH_TRACKPAD_PHASE1` build flag (OFF by default) so production builds revert to upstream behavior (trackpad as generic mouse, no scroll/gestures). The Phase 1 source remains in-tree for reference and as a future fallback for non-macOS hosts; it will be removed once Phase 2 ships and is verified.
+**Phase 1 ships.** The `DH_TRACKPAD_PHASE1` build flag is ON by default. Default builds give Magic Trackpad users:
 
-The clearer long-term answer is Phase 2: spoof the Apple device on the deskhop's device side and forward the proprietary HID reports verbatim, letting macOS bind its native trackpad driver. macOS handles all gestures natively. Phase 1's translation layer exists at all because deskhop is an HID interpreter rather than a passthrough KVM — Phase 2 is the architectural fix.
+- Cursor + physical click
+- Two-finger vertical and horizontal scroll
+- Three-finger horizontal swipe → workspace switch (Ctrl+Alt+Left/Right, GNOME default)
+
+A watchdog reboot bug surfaced during Phase 1 bringup when `output_mouse_report` was called at the trackpad's native rate (~100-250 Hz). Bisection identified the call site but not the underlying cause — same call works fine for regular mice at similar rates. Pragmatic fix: the Phase 1 emit path throttles to 100 Hz with motion accumulation in between. Cursor feel is unaffected (within typical perception threshold). Root cause investigation is deferred and tracked separately.
+
+**Phase 2 attempted, abandoned.** We tried spoofing the Apple device descriptor so Linux's `hid-magicmouse` would bind and handle gestures natively. It worked at the binding layer but broke the keyboard: `hid-magicmouse` claims **all** HID interfaces of any Apple-VID device by design, with no per-interface filter. We tried udev rebind workarounds; Linux's `hid-generic` explicitly refuses to bind when a more-specific driver matches, so no workaround was viable. A USB hub (firmware or hardware) would solve it but is significant new work. Phase 2 source, scripts, and udev rules were reverted; design notes are kept here as a record.
 
 ## Approach
 
