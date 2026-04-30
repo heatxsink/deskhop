@@ -337,12 +337,31 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
             bool buttons_changed = (buttons != global_state.mouse_buttons);
 
 #ifndef DH_TRACKPAD_PHASE1_SKIP_EMIT
-            if (moved || buttons_changed) {
+            /* Throttle emit to ~100 Hz, accumulating motion across frames in
+               between. The trackpad's native report rate (100-250 Hz) appears
+               to trigger a watchdog reboot when output_mouse_report fires on
+               every frame -- root cause unknown, bisected to this call.
+               Throttling sidesteps it. */
+            static int32_t accum_dx = 0, accum_dy = 0, accum_wheel = 0, accum_pan = 0;
+            static uint32_t last_emit_us = 0;
+            const uint32_t EMIT_INTERVAL_US = 10000; /* 100 Hz */
+
+            if (moved) {
+                accum_dx    += dx;
+                accum_dy    += dy;
+                accum_wheel += wheel;
+                accum_pan   += pan;
+            }
+
+            uint32_t now_us = time_us_32();
+            bool have_motion = (accum_dx || accum_dy || accum_wheel || accum_pan);
+            if ((have_motion || buttons_changed) &&
+                (now_us - last_emit_us) >= EMIT_INTERVAL_US) {
                 mouse_values_t values = {
-                    .move_x  = dx,
-                    .move_y  = dy,
-                    .wheel   = wheel,
-                    .pan     = pan,
+                    .move_x  = accum_dx,
+                    .move_y  = accum_dy,
+                    .wheel   = accum_wheel,
+                    .pan     = accum_pan,
                     .buttons = buttons,
                 };
                 enum screen_pos_e dir = update_mouse_position(&global_state, &values);
@@ -354,6 +373,8 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                 if (dir != NONE) do_screen_switch(&global_state, dir);
 #endif
                 global_state.mouse_buttons = buttons;
+                accum_dx = accum_dy = accum_wheel = accum_pan = 0;
+                last_emit_us = now_us;
                 (void)mr; (void)dir;
             }
 #endif
