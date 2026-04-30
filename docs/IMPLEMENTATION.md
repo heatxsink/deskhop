@@ -195,15 +195,49 @@ This bypasses `extract_report_values()` (which would misread the descriptor) and
 
 ## Phase 2 — Apple VID/PID spoof + raw multi-touch passthrough
 
-Builds on Phase 1. Adds a dynamic device descriptor, mirrors the trackpad's vendor multi-touch interface, forwards multi-touch reports verbatim across the UART. macOS binds its real trackpad driver.
+Make macOS see a real Apple Magic Trackpad. macOS binds its native driver. Tap-to-click, gestures, the System Settings pane all work natively. Deskhop becomes a transport layer for the trackpad's proprietary HID reports — no decoding, no synthesis.
 
-### Step 2.1 — macOS feature-report probing capture
+### What we already have (carried from Phase 1 work)
 
-Before changing descriptors, capture macOS's actual driver-bind behavior. Plug the trackpad directly into a Mac, run a USB capture (e.g., Wireshark with USBPcap or macOS USB Prober), and identify:
-- Any feature reports (`GET_REPORT` / `SET_REPORT` on report types `0x03`) macOS sends during bind.
-- Any periodic OUT reports during normal operation.
+- Magic Trackpad detection by VID/PID (`hid_interface_t.vendor_id` / `product_id` cached at mount).
+- Activation feature report code (`send_magic_trackpad_activation`) — gated behind `DH_TRACKPAD_PHASE1` today; Phase 2 pulls it out so it always runs when a trackpad is detected.
+- All four trackpad HID descriptors captured verbatim in `docs/captures/trackpad-mount-and-baseline.txt`.
+- Multi-touch wire format documented in `docs/captures/trackpad-multitouch-frames.txt` (informational only — Phase 2 doesn't decode).
+- `DH_DEBUG_TRACKPAD` and `DH_DEBUG_TRACKPAD_LED` diagnostic flags.
 
-This determines whether Phase 2 needs unidirectional (host → device only) or bidirectional report forwarding. Plan assumes bidirectional; confirm before designing the UART transport.
+### What we know about deskhop's existing internals
+
+- `PACKET_DATA_LENGTH = 8` bytes per UART packet (`src/include/packet.h:37`). Trackpad reports are 15-39 bytes IN, up to 63 bytes OUT — does not fit a single existing packet, so Phase 2 needs either fragmentation across multiple packets OR a new wider packet type.
+- Production builds advertise 2 HID interfaces; debug builds 3 (adds CDC). Config mode swaps to a 4-interface descriptor (adds vendor + MSC). Phase 2 adds a 4th non-config-mode interface for the trackpad.
+- `tud_descriptor_device_cb` and `tud_descriptor_configuration_cb` already do conditional descriptor selection based on `config_mode_active`. Trackpad mode adds a third arm.
+
+### Open questions to settle before code
+
+1. **Mirror which trackpad interfaces?** The trackpad exposes 4. The minimum macOS likely needs is the standard mouse interface (Instance 1, descriptor 110 B) and the multi-touch vendor interface (Instance 2, descriptor 36 B). Instances 0 (vendor power management) and 3 (vendor firmware update) are probably skippable. **Default plan: mirror Instances 1 and 2; revisit if macOS refuses to bind the trackpad driver.**
+
+2. **UART packet format for raw HID reports.** Two options:
+   - **(A) Fragmentation across existing 8-byte packets.** Reports up to 63 B → up to 8 packets per report. Need a small header (sequence + offset) so the receiver can reassemble. Smaller blast radius — no changes to `PACKET_DATA_LENGTH` or any other packet type.
+   - **(B) Bump `PACKET_DATA_LENGTH` to 64 bytes globally.** Simpler code but every existing packet type now wastes 56 bytes per UART transfer. UART is 1 Mbps — wasted bandwidth becomes noticeable for keyboard/mouse latency.
+   - **Default plan: option A (fragmentation).** Implement at the UART transport layer so the trackpad code only sees full reports.
+
+3. **Composite device strangeness on Apple VID/PID.** When trackpad mode is active, the device descriptor advertises Apple VID `0x05AC` / PID `0x0265`. But the deskhop also presents its own keyboard/mouse interfaces under that VID/PID. macOS may or may not balk at "Apple Magic Trackpad 2 with extra keyboard interface". **Risk; needs in-situ test. Mitigation if it fails: present trackpad-only mode (keyboard goes through deskhop's other Pico).** Bringup step 2.1 verifies.
+
+4. **What happens to the keyboard/mouse on the active output during trackpad-mode enumeration cycling?** When the trackpad mounts, the device-side board does `tud_disconnect()` → 100 ms → `tud_connect()`. The host PC briefly loses its keyboard. Acceptable as a one-time cost on plug-in; needs to be flagged in the README.
+
+5. **macOS feature-report probing during driver bind.** macOS may issue `GET_REPORT(Feature)` requests during driver bind that we'd need to forward back to the trackpad. Without a USB capture from a Mac with the trackpad plugged in directly, we don't know. **Plan assumes bidirectional forwarding from the start; if Step 2.1 finds it's unidirectional, we simplify later.**
+
+### Step 2.1 — Bringup capture
+
+Plug the trackpad directly into a Mac (no deskhop in the path). Capture USB traffic with one of:
+- macOS USB Prober (free, ships with Xcode developer tools).
+- `tcpdump -i usbmon...` on a Linux box (if you have one with USB monitoring kernel module).
+
+What to identify:
+- **Feature-report traffic** during bind (`GET_REPORT` / `SET_REPORT` with `bmRequestType` `0xA1` or `0x21`, `wValue` high byte `0x03`). Confirms whether OUT/Feature forwarding is needed in addition to IN forwarding.
+- **The activation packet** — confirm Linux's `{0x02, 0x01}` is what macOS sends too, or whether macOS uses a different payload. (Linux open-sources this; macOS doesn't, so this is the way to know.)
+- **What interfaces does macOS actually talk to?** Confirms whether mirroring Instances 1+2 is enough, or if we also need 0+3.
+
+This is paid in time, not code. Single afternoon. Output: a one-page note documenting the protocol choices we're making.
 
 ### Step 2.2 — Trackpad device descriptor
 
@@ -213,101 +247,167 @@ In `src/usb_descriptors.c`:
 tusb_desc_device_t const desc_device_trackpad = DEVICE_DESCRIPTOR(0x05AC, 0x0265);
 ```
 
-Update `tud_descriptor_device_cb` to a 3-way select:
-1. `config_mode_active` → `desc_device_config` (config UI takes priority).
-2. `global_state.trackpad_active` → `desc_device_trackpad`.
-3. else → `desc_device`.
+Update `tud_descriptor_device_cb` to a 3-way select with priority `config > trackpad > default`:
+```c
+if (global_state.config_mode_active) return desc_device_config;
+if (global_state.trackpad_mode_active) return desc_device_trackpad;
+return desc_device;
+```
+
+Add `trackpad_mode_active` field to `device_t` (`src/include/structs.h`).
+
+String descriptors: keep `iManufacturer` and `iProduct` deskhop-branded. macOS uses VID/PID for binding decisions; strings are display only and macOS will show "Apple Magic Trackpad 2" in the trackpad pref pane regardless. Mismatched strings are cosmetic. (If Step 2.1 finds macOS rejects bind on string mismatch, swap to "Apple"/"Magic Trackpad 2" strings under trackpad mode.)
 
 ### Step 2.3 — Trackpad configuration descriptor
 
-Add `desc_hid_report_trackpad[]` mirroring the trackpad's 36-byte vendor descriptor (Report ID `0x3F` IN, Report ID `0x53` OUT, usage page `0xFF00`, usage `0x0D`). Copy from Phase 1's captured descriptor — do not retype from the issue dump.
+New report descriptors in `src/usb_descriptors.c`:
+```c
+// Mirror Instance 1 of trackpad (110 bytes; standard mouse + vendor 0x3F input + vendor 0x44 feature)
+uint8_t const desc_hid_report_trackpad_mouse[] = { /* paste from docs/captures/ */ };
 
-Add `desc_configuration_trackpad[]` containing:
-- Existing keyboard/mouse/consumer/system HID interface (so non-trackpad input still flows).
-- New trackpad HID interface with the vendor descriptor above.
-- No MSC, no vendor config interface (this descriptor is only used in normal mode, not config mode).
+// Mirror Instance 2 of trackpad (36 bytes; vendor multi-touch, Report ID 0x3F IN, 0x53 OUT)
+uint8_t const desc_hid_report_trackpad_mt[] = { /* paste from docs/captures/ */ };
+```
 
-Update `tud_hid_descriptor_report_cb` and `tud_descriptor_configuration_cb` with matching 3-way selects.
+New configuration descriptor `desc_configuration_trackpad[]` with interfaces:
+1. Existing deskhop keyboard/mouse/consumer/system (`ITF_NUM_HID`, `STRID_PRODUCT`, `desc_hid_report`)
+2. Existing relative-mouse helper (`ITF_NUM_HID_REL_M`, `STRID_MOUSE`, `desc_hid_report_relmouse`)
+3. New trackpad mouse (`ITF_NUM_HID_TRACKPAD_MOUSE`, dedicated string, `desc_hid_report_trackpad_mouse`)
+4. New trackpad multi-touch (`ITF_NUM_HID_TRACKPAD_MT`, dedicated string, `desc_hid_report_trackpad_mt`)
 
-Define a new `ITF_NUM_HID_TRACKPAD` and a new endpoint number (`EPNUM_HID_TRACKPAD = 0x84` or next free).
+Define new endpoints. Current normal mode uses `EPNUM_HID = 0x81`, `EPNUM_HID_REL_M = 0x82`. Trackpad mode adds `EPNUM_HID_TRACKPAD_MOUSE = 0x83` and `EPNUM_HID_TRACKPAD_MT = 0x84`. The multi-touch interface needs OUT too (Report ID 0x53): `EPNUM_HID_TRACKPAD_MT_OUT = 0x04`.
 
-### Step 2.4 — UART transport for raw HID reports
+Update `tud_hid_descriptor_report_cb` to dispatch trackpad instances to the right report descriptor.
+
+Update `tud_descriptor_configuration_cb` with the 3-way select. Bump `CFG_TUD_HID` in `tusb_config.h` to accommodate the additional HID interfaces (currently 3, will need 5 in trackpad mode).
+
+### Step 2.4 — Always-on activation
+
+Move `send_magic_trackpad_activation` out from under `#ifdef DH_TRACKPAD_PHASE1` in `src/usb.c`. Activation is needed whenever a trackpad is plugged in — Phase 2's whole premise is the trackpad sending multi-touch frames, which it only does in activated state.
+
+Same for `tuh_hid_set_report_complete_cb` (currently Phase-1-gated).
+
+### Step 2.5 — UART transport: fragmented raw HID reports
 
 New packet types in `src/include/protocol.h`:
-- `MOUSE_RAW_IN_MSG`: source-side board → device-side board. Carries Report ID `0x3F` payloads from the trackpad to forward to the device-side host PC.
-- `MOUSE_RAW_OUT_MSG`: device-side board → source-side board. Carries Report ID `0x53` payloads from the host PC to forward to the trackpad.
+```c
+TRACKPAD_REPORT_IN_MSG  = 23,  // Source -> Device, fragmented Apple HID reports
+TRACKPAD_REPORT_OUT_MSG = 24,  // Device -> Source, fragmented Apple HID OUT/Feature reports
+```
 
-Existing protocol uses fixed-length packets (`RAW_PACKET_LENGTH`). Trackpad reports are 15 bytes IN, 63 bytes OUT — fits comfortably, but verify against current packet payload size in `src/include/packet.h` and bump if needed. Add a length byte if reports turn out to be variable-length.
+Each packet's 8-byte data field carries:
+- byte 0: report ID (`0x3F`, `0x53`, etc. — pass through whatever the trackpad/host sent)
+- byte 1: total report length (1-255)
+- byte 2: fragment offset within report (0, 6, 12, ...)
+- bytes 3-7: 5 bytes of payload
 
-Update `validate_packet` and `process_packet` (`src/protocol.c`) to accept the new types.
+Reassembly logic in `src/protocol.c`:
+- Maintain a small per-direction buffer (~64 bytes max — covers the largest expected report).
+- On first fragment (offset 0): record report ID and total length, start collecting.
+- On subsequent fragments: copy into buffer at `offset`.
+- When `offset + 5 >= total_length`: report complete, dispatch.
 
-### Step 2.5 — Source-side: forward IN reports
+Compute: 63-byte report → ceil(63/5) = 13 packets × 12 bytes UART each = 156 bytes per report. At 90 Hz peak = 14 KB/s. UART runs at 1 Mbps = 125 KB/s. **~11% utilization at peak — fine.**
 
-In `tuh_hid_report_received_cb` (`src/usb.c:212`), when `is_apple_magic_trackpad(iface)` and `report_id == 0x3F`:
-- If we are also the active output: drop into Phase 1's decoder + emit synthesized scroll (so the local host PC, which sees the spoofed trackpad, gets the *raw* report; we don't need to also synthesize). Actually: under Phase 2, the active-output board sends the raw report to its own device-side stack via `tud_hid_n_report(ITF_NUM_HID_TRACKPAD, 0x3F, ...)`. The Phase 1 decoder is no longer in the active-output path for the trackpad.
-- If we are not the active output: package as `MOUSE_RAW_IN_MSG` and send over UART.
+Add `validate_packet` cases for the new types.
 
-Resolve the active-vs-remote split the same way `output_mouse_report` already does (`src/mouse.c:125`).
+### Step 2.6 — Source-side: forward IN reports
 
-### Step 2.6 — Device-side: deliver IN reports
+In `tuh_hid_report_received_cb` (`src/usb.c`), when the iface is the Magic Trackpad's mouse-class instance (Instance 1) or multi-touch-class instance (Instance 2):
+- If this board is the active output: queue directly to local device-side via the dedicated trackpad HID interface (`tud_hid_n_report(ITF_NUM_HID_TRACKPAD_MOUSE, report_id, ...)` or `ITF_NUM_HID_TRACKPAD_MT`).
+- Otherwise: fragment and queue UART packets of type `TRACKPAD_REPORT_IN_MSG`.
 
-When the device-side board receives `MOUSE_RAW_IN_MSG`, call `tud_hid_n_report(ITF_NUM_HID_TRACKPAD, 0x3F, payload, len)`. Same queueing pattern as the existing mouse queue if needed (`process_mouse_queue_task` in `src/mouse.c:346`).
+Routing logic mirrors `output_mouse_report` (`src/mouse.c:125`).
 
-### Step 2.7 — Device-side: capture OUT reports
+### Step 2.7 — Device-side: deliver IN reports
 
-In `tud_hid_set_report_cb` (`src/usb.c:39`), match on `instance == ITF_NUM_HID_TRACKPAD && report_id == 0x53 && report_type == HID_REPORT_TYPE_OUTPUT`. Forward the buffer to the source-side board as `MOUSE_RAW_OUT_MSG`.
+When `TRACKPAD_REPORT_IN_MSG` reassembles into a full report, call `tud_hid_n_report` on the appropriate trackpad interface. May need a queue if the device stack isn't ready (`tud_hid_n_ready` returns false) — pattern matches `process_mouse_queue_task`.
 
-If macOS sends feature reports (TBD by step 2.1), extend `tud_hid_get_report_cb` to bridge those too. Adds round-trip latency, but feature reports are typically infrequent.
+### Step 2.8 — Device-side: capture OUT reports
 
-### Step 2.8 — Source-side: deliver OUT reports
+In `tud_hid_set_report_cb` (`src/usb.c`), add cases for `instance == ITF_NUM_HID_TRACKPAD_MT && report_id == 0x53 && report_type == HID_REPORT_TYPE_OUTPUT`. Fragment and queue `TRACKPAD_REPORT_OUT_MSG`.
 
-When the source-side board receives `MOUSE_RAW_OUT_MSG`, call `tuh_hid_set_report(dev_addr, instance, 0x53, HID_REPORT_TYPE_OUTPUT, payload, len)`.
+For `tud_hid_get_report_cb` (Feature requests from macOS): if Step 2.1 confirms macOS does this, add a request/response loop. Probably uncommon enough that synchronous round-trip latency is acceptable.
 
-### Step 2.9 — Cursor switching policy
+### Step 2.9 — Source-side: deliver OUT reports
 
-Add `state->trackpad_active` (`src/include/structs.h`). Set on Apple Magic Trackpad mount, clear on unmount.
+Reassemble `TRACKPAD_REPORT_OUT_MSG`, then `tuh_hid_set_report(trackpad_dev_addr, trackpad_instance, report_id, HID_REPORT_TYPE_OUTPUT, payload, len)`.
 
-In `do_screen_switch` (`src/mouse.c:241`), early-return if `state->trackpad_active`. Cursor-edge switching is meaningless under raw passthrough because deskhop can no longer see absolute X/Y. Switching falls back to the existing keyboard shortcut (`Ctrl + Caps Lock`).
+### Step 2.10 — Mode lifecycle
 
-Document the behavior change in the README near the trackpad note.
+New UART message `TRACKPAD_MODE_MSG` carries one byte: 1 = enter trackpad mode, 0 = exit.
 
-### Step 2.10 — Enumeration lifecycle
+Source-side board:
+- On Magic Trackpad mount → send `TRACKPAD_MODE_MSG(1)` to device-side board.
+- On Magic Trackpad unmount → send `TRACKPAD_MODE_MSG(0)`.
 
-On trackpad mount on the source-side board, signal the device-side board (new UART message, `TRACKPAD_MOUNT_MSG`). Device-side board:
-1. Sets `trackpad_active = true`.
-2. Calls `tud_disconnect()`.
-3. Brief delay (~100 ms — match TinyUSB recommendations).
-4. Calls `tud_connect()`.
+Device-side board, on receipt:
+1. Update `global_state.trackpad_mode_active`.
+2. Call `tud_disconnect()`.
+3. Wait ~100 ms (per TinyUSB recommendations for clean re-enumeration).
+4. Call `tud_connect()`.
+5. Host PC re-enumerates.
 
-Host PC re-enumerates and sees the spoofed Apple trackpad.
+This must happen on both boards, but the *re-enumeration* affects only the device-side board (the one connected to the host PC). The source-side board's state change is informational only (so it knows whether to forward reports to local-device-stack vs UART).
 
-On trackpad unmount: reverse — `trackpad_active = false`, disconnect, reconnect. Host re-enumerates back to the default deskhop descriptor.
+Config mode coexistence: when the user enters config mode while trackpad mode is active, config mode wins. The config-mode-entry path already does a tud_disconnect/connect cycle; just ensure it picks up the config descriptor (priority order in 2.2 handles this). On config-mode exit, if trackpad still mounted, swap back to trackpad descriptor.
 
-If the user enters config mode while the trackpad is connected: config mode wins. Disconnect, swap to config descriptor, reconnect. On exit, swap back to trackpad descriptor.
+### Step 2.11 — Cursor switching policy
 
-### Step 2.11 — Validation
+In `do_screen_switch` (`src/mouse.c:241`), early-return if `state->trackpad_mode_active`:
+
+```c
+if (state->trackpad_mode_active) return;
+```
+
+Cursor-edge switching is meaningless under raw passthrough — deskhop no longer sees absolute X/Y coordinates because reports go straight through. Switching falls back to the keyboard shortcut. README needs a note.
+
+### Step 2.12 — Phase 1 removal
+
+Once Steps 2.1-2.11 are validated end-to-end:
+1. Delete `src/magic_trackpad.c`, `src/include/magic_trackpad.h`.
+2. Delete `DH_TRACKPAD_PHASE1` flag from `CMakeLists.txt`.
+3. Delete the `#ifdef DH_TRACKPAD_PHASE1` blocks from `src/usb.c`.
+4. Update `docs/IMPLEMENTATION.md` Phase 1 section to mark "removed in commit X".
+5. Single commit, ~300 lines deleted.
+
+### Step 2.13 — Validation
 
 | Test | Expected |
 |---|---|
-| macOS System Settings → Trackpad pane | Visible, all options present |
-| Tap-to-click toggle | Works when enabled; physical click works regardless |
-| Two-finger scroll | Native macOS scroll behavior, same as direct connection |
-| Three-finger swipe between desktops | Works |
-| Four-finger Mission Control | Works |
-| Switch outputs via keyboard shortcut | Trackpad continues to work on new output |
-| Mouse-drag cursor switching | Disabled while trackpad is the active pointer |
-| Regular USB mouse plugged alongside trackpad | Mouse works; mouse-drag switching still works |
-| Linux output | `hid-magicmouse` binds; gestures work |
-| Windows output | Basic mouse functionality; advanced gestures NOT expected (document as known limitation) |
-| Unplug trackpad | Device re-enumerates as default deskhop; mouse devices still work |
+| macOS: System Settings → Trackpad pane | Visible, all options present, model identified as Magic Trackpad 2 |
+| macOS: Tap-to-click toggle | Works when enabled; physical click works regardless |
+| macOS: Two-finger scroll | Native macOS scroll behavior, indistinguishable from direct connect |
+| macOS: Three-finger swipe between Spaces | Works |
+| macOS: Four-finger Mission Control swipe-up | Works |
+| macOS: Force Touch (if hardware supports) | Works to whatever degree macOS exposes it |
+| Switch outputs via keyboard shortcut | Trackpad continues to work on new output (re-enumerates on the new one if needed) |
+| Mouse-drag cursor switching | Disabled while trackpad is connected (documented limitation) |
+| Regular USB mouse plugged alongside trackpad | Mouse works on both outputs; mouse-drag switching still works for the regular mouse |
+| Linux output: hid-magicmouse | Binds; gestures work natively |
+| Windows output | Basic mouse functionality only; advanced gestures not expected (documented) |
+| Plug trackpad → unplug trackpad | Device re-enumerates back to default deskhop; keyboard/mouse still work |
 | Enter config mode with trackpad attached | Config UI works; on exit, trackpad re-binds |
+| Long stress: 30 minutes of mixed keyboard + trackpad use | No watchdog reboots, no UART desync, no crashes |
 
 ### Phase 2 file delta
 
-- New: `desc_device_trackpad`, `desc_configuration_trackpad`, `desc_hid_report_trackpad` in `src/usb_descriptors.c`.
-- New UART packet types in `src/include/protocol.h`, handlers in `src/protocol.c`.
-- Modified: `src/usb.c` (descriptor selection, report routing, set_report capture), `src/include/structs.h` (`trackpad_active` flag, possibly enlarged packet payload), `src/mouse.c` (`do_screen_switch` early-return), `src/include/usb_descriptors.h` (new ITF / EPNUM constants).
-- Phase 1's gesture decoder is retained as a fallback for boot-mode and as documentation.
+- New: `desc_device_trackpad`, `desc_configuration_trackpad`, `desc_hid_report_trackpad_mouse`, `desc_hid_report_trackpad_mt` in `src/usb_descriptors.c`.
+- New UART packet types and reassembly logic in `src/include/protocol.h`, `src/protocol.c`.
+- Modified: `src/usb.c` (descriptor selection, raw report routing, `set_report` capture, removed Phase 1 gating from activation), `src/include/structs.h` (`trackpad_mode_active` flag), `src/mouse.c` (`do_screen_switch` early-return), `src/include/usb_descriptors.h` (new ITF / EPNUM constants), `src/include/tusb_config.h` (`CFG_TUD_HID = 5`).
+- Source captures `docs/captures/*.txt` are reference-only — Phase 2 reads bytes from the trackpad live, no compile-time descriptor coding required.
+
+### Effort estimate
+
+- Step 2.1 (capture): half a day, no code.
+- Steps 2.2-2.4 (descriptors and activation un-gating): half a day, ~150 lines.
+- Steps 2.5-2.9 (UART transport + bidirectional forwarding): 2 days, ~400 lines (the fragmentation logic is the bulk).
+- Step 2.10 (mode lifecycle + re-enumeration): half a day, ~80 lines.
+- Step 2.11 (cursor switching): trivial, 5 lines.
+- Step 2.12 (Phase 1 removal): trivial, single delete commit.
+- Step 2.13 (validation across OSes): half a day with hardware.
+
+**Total: ~4-5 days of focused work.** Two commit-worthy milestones: "trackpad descriptor + IN report passthrough working" and "OUT/feature reports + lifecycle complete".
 
 ---
 
