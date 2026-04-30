@@ -16,6 +16,7 @@ _Static_assert(MAX_DEVICES <= CFG_TUH_DEVICE_MAX,
 
 #ifdef DH_DEBUG_TRACKPAD
 #define APPLE_VID 0x05AC
+#define MAGIC_TRACKPAD_PID 0x0265
 
 static void hex_dump(const char *label, const uint8_t *data, int len) {
     dh_debug_printf("%s (len=%d):\n", label, len);
@@ -27,6 +28,27 @@ static void hex_dump(const char *label, const uint8_t *data, int len) {
         }
         dh_debug_printf("%s\n", line);
     }
+}
+
+/* Switches Magic Trackpad 2 USB out of mouse-emulation mode and into the
+   proprietary multi-touch report format. Layout matches Linux's
+   drivers/hid/hid-magicmouse.c feature_mt_trackpad2_usb. */
+static uint8_t magic_trackpad_activate[] = { 0x01 };
+
+static void send_magic_trackpad_activation(uint8_t dev_addr, uint8_t instance) {
+    bool ok = tuh_hid_set_report(dev_addr, instance, 0x02,
+                                 HID_REPORT_TYPE_FEATURE,
+                                 magic_trackpad_activate,
+                                 sizeof(magic_trackpad_activate));
+    dh_debug_printf("Magic Trackpad activate: dev=%u inst=%u %s\n",
+                    dev_addr, instance, ok ? "queued" : "FAILED");
+}
+
+void tuh_hid_set_report_complete_cb(uint8_t dev_addr, uint8_t instance,
+                                    uint8_t report_id, uint8_t report_type,
+                                    uint16_t len) {
+    dh_debug_printf("set_report complete: dev=%u inst=%u id=%02x type=%u len=%u\n",
+                    dev_addr, instance, report_id, report_type, len);
 }
 #endif
 
@@ -232,6 +254,17 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
 
     /* Kick off the report querying */
     tuh_hid_receive_report(dev_addr, instance);
+
+#ifdef DH_DEBUG_TRACKPAD
+    {
+        uint16_t vid = 0, pid = 0;
+        tuh_vid_pid_get(dev_addr, &vid, &pid);
+        if (vid == APPLE_VID && pid == MAGIC_TRACKPAD_PID
+            && itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
+            send_magic_trackpad_activation(dev_addr, instance);
+        }
+    }
+#endif
 }
 
 /* Invoked when received report from device via interrupt endpoint */
@@ -249,6 +282,12 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
             dh_debug_printf("HID report %04x:%04x dev_addr=%u instance=%u\n",
                             vid, pid, dev_addr, instance);
             hex_dump("  report", report, len);
+
+            /* Activation puts the trackpad into multi-touch mode and the existing
+               mouse parser would misread the new payload as garbage X/Y deltas.
+               Drop reports here, keep requesting more, and return. */
+            tuh_hid_receive_report(dev_addr, instance);
+            return;
         }
     }
 #endif

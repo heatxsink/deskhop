@@ -22,7 +22,48 @@ Before writing any decoder, confirm what Pico-PIO-USB actually enumerates and wh
 
 This step ships no behavior. It produces a one-page note that locks down the report layout for Step 1.3.
 
-### Step 1.2 — Device identification
+### Step 1.1 — Findings (recorded)
+
+VID 0x05AC / PID 0x0265 (Magic Trackpad 2 USB) enumerated through deskhop:
+
+| Instance | itf_protocol | Descriptor size | Role |
+|---|---|---|---|
+| 0 | 0 (none) | 83 B | Power management (Report ID 0x90), vendor 0xE0/0x9A |
+| 1 | 2 (mouse) | 110 B | **Standard mouse (Report ID 0x02), vendor 0x3F (16 B), vendor 0x44 (1387 B feature)** |
+| 2 | 0 (none) | 36 B | **Multi-touch vendor: Report ID 0x3F IN (15 B), Report ID 0x53 OUT (63 B)** |
+| 3 | 0 (none) | 27 B | Vendor 0xC0 (firmware update?) |
+
+Pico-PIO-USB enumerates all four interfaces — the biggest risk in DESIGN.md is eliminated.
+
+In the as-shipped state (no driver activation), only Instance 1 sends data. Reports are 8 bytes on Report ID 0x02 in classic mouse format (`02 BB XX YY 00 00 00 NN` — buttons / X delta / Y delta / 4 padding). Instance 2 (the multi-touch interface) is completely silent. The 110-byte descriptor on Instance 1 also advertises Report ID 0x3F (16 B input) and Report ID 0x44 (1387 B feature) — neither is sent in this state.
+
+The trackpad needs a multi-touch activation feature report before it switches Report ID 0x02 from mouse-emulation mode to multi-touch mode. Linux (`drivers/hid/hid-magicmouse.c`) sends this for `USB_DEVICE_ID_APPLE_MAGICTRACKPAD2`:
+
+```c
+static const u8 feature_mt_trackpad2_usb[] = { 0x02, 0x01 };
+hid_hw_raw_request(hdev, 0x02, buf, 2, HID_FEATURE_REPORT, HID_REQ_SET_REPORT);
+```
+
+Translated to TinyUSB host: `SET_REPORT(Feature)` to Instance 1, Report ID `0x02`, payload `{0x01}`. Once enabled, Report ID 0x02 reports grow significantly and carry multi-touch frames.
+
+### Step 1.2 — Multi-touch activation
+
+At mount, after parsing the descriptor, if `is_apple_magic_trackpad(iface)` is true and `itf_protocol == HID_ITF_PROTOCOL_MOUSE` (i.e., Instance 1, the standard mouse interface), send the activation feature report:
+
+```c
+static const uint8_t magic_trackpad_activate[] = { 0x01 };
+tuh_hid_set_report(dev_addr, instance, 0x02, HID_REPORT_TYPE_FEATURE,
+                   (void *)magic_trackpad_activate, sizeof(magic_trackpad_activate));
+```
+
+Implement `tuh_hid_set_report_complete_cb` to log success/failure (only useful with `DH_DEBUG_TRACKPAD`).
+
+While we lack the multi-touch decoder, sending activation produces reports that the existing mouse pipeline cannot interpret — the user's cursor will go haywire. So:
+
+- **Gate activation behind `DH_DEBUG_TRACKPAD`.** Production builds remain unaffected.
+- **Under `DH_DEBUG_TRACKPAD`, also bypass the existing mouse pipeline for trackpad reports** (drop them after logging) so the cursor stays still rather than thrashing. The user loses trackpad input on debug builds — expected, plug a regular mouse alongside.
+
+### Step 1.3 — Device identification
 
 Extend the per-interface state to remember VID and PID so the report path can branch on them without re-querying TinyUSB on every report.
 
@@ -36,7 +77,7 @@ Extend the per-interface state to remember VID and PID so the report path can br
   ```
   Declare in `src/include/utils.h` (or `misc.h` — match existing convention).
 
-### Step 1.3 — Apple multi-touch decoder
+### Step 1.4 — Apple multi-touch decoder
 
 New module `src/magic_trackpad.c` + `src/include/magic_trackpad.h`. Reference: Linux `drivers/hid/hid-magicmouse.c`, specifically the trackpad-2 USB report handler.
 
@@ -65,7 +106,7 @@ Implementation notes:
 - Sign-extend signed 12/13-bit X/Y fields correctly. Get this wrong and scroll direction inverts intermittently.
 - Pure decode only. No gesture logic in this file.
 
-### Step 1.4 — Gesture state machine
+### Step 1.5 — Gesture state machine
 
 New module `src/magic_trackpad_gestures.c` + header. Owns per-trackpad gesture state. Persists across reports.
 
@@ -90,7 +131,7 @@ void mt_gesture_step(mt_gesture_state_t *s, mt_frame_t *frame, mouse_values_t *o
 
 Store `mt_gesture_state_t` inside `hid_interface_t` (anonymous union with the existing mouse parser state, or a separate field — match existing structure conventions). Reset on disconnect in `tuh_hid_umount_cb`.
 
-### Step 1.5 — Route Apple reports
+### Step 1.6 — Route Apple reports
 
 In `tuh_hid_report_received_cb` (`src/usb.c:212`), before the standard report-ID dispatch:
 
@@ -115,7 +156,7 @@ if (is_apple_magic_trackpad(iface) && report_id == 0x02) {
 
 This bypasses `extract_report_values()` (which would misread the descriptor) and routes through the same downstream as `process_mouse_report` (`src/mouse.c:321`).
 
-### Step 1.6 — Validation
+### Step 1.7 — Validation
 
 | Test | Expected |
 |---|---|
