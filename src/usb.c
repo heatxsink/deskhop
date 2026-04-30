@@ -32,8 +32,13 @@ static void hex_dump(const char *label, const uint8_t *data, int len) {
 
 /* Switches Magic Trackpad 2 USB out of mouse-emulation mode and into the
    proprietary multi-touch report format. Layout matches Linux's
-   drivers/hid/hid-magicmouse.c feature_mt_trackpad2_usb. */
-static uint8_t magic_trackpad_activate[] = { 0x01 };
+   drivers/hid/hid-magicmouse.c feature_mt_trackpad2_usb.
+
+   Linux's usbhid_set_raw_report sends the buffer including the report ID byte
+   AS the wire payload (count=2, buf={0x02,0x01}). TinyUSB's tuh_hid_set_report
+   only encodes the report ID in wValue — the buffer is the wire payload as-is.
+   So we have to include the report ID byte ourselves. */
+static uint8_t magic_trackpad_activate[] = { 0x02, 0x01 };
 
 static void send_magic_trackpad_activation(uint8_t dev_addr, uint8_t instance) {
     bool ok = tuh_hid_set_report(dev_addr, instance, 0x02,

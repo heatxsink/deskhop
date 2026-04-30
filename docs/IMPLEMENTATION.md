@@ -44,7 +44,7 @@ static const u8 feature_mt_trackpad2_usb[] = { 0x02, 0x01 };
 hid_hw_raw_request(hdev, 0x02, buf, 2, HID_FEATURE_REPORT, HID_REQ_SET_REPORT);
 ```
 
-Translated to TinyUSB host: `SET_REPORT(Feature)` to Instance 1, Report ID `0x02`, payload `{0x01}`. Once enabled, Report ID 0x02 reports grow significantly and carry multi-touch frames.
+Translated to TinyUSB host: `SET_REPORT(Feature)` to Instance 1, Report ID `0x02`, **payload `{0x02, 0x01}` (2 bytes including the report ID prefix)**. The trackpad expects the report ID byte at the start of the wire payload — Linux's `usbhid_set_raw_report` sends the buffer as-is (`{0x02, 0x01}`, 2 bytes), but TinyUSB's `tuh_hid_set_report` only encodes the report ID in `wValue` and ships `len` bytes verbatim. So the report ID prefix has to be included in the buffer. Sending only `{0x01}` (1 byte) causes the trackpad to STALL the control transfer (`set_report_complete_cb` fires with `len=0` per `hid_host.c:281`). Once enabled, Report ID 0x02 reports grow significantly and carry multi-touch frames.
 
 ### Step 1.2 — Multi-touch activation
 
