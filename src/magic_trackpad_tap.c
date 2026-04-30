@@ -82,7 +82,14 @@ void tp_tap_init(tp_tap_t *tap) {
     memset(tap, 0, sizeof(*tap));
     tap->state        = TAP_STATE_IDLE;
     tap->enabled      = true;
-    tap->drag_enabled = true;
+    /* drag_enabled OFF until we wire up a periodic timer tick. With it on,
+       libinput defers tap release to a timer that only fires when
+       mt_gesture_step is called, and the trackpad may go silent after a
+       lift -- leaving the click stuck pressed. With drag_enabled=false,
+       release fires immediately on lift. Tap-and-drag is therefore not
+       yet supported; will re-enable when a periodic core1 task is added
+       to advance the timer between HID reports. */
+    tap->drag_enabled = false;
     for (int i = 0; i < MT_MAX_FINGERS; i++) {
         tap->touches[i].state = TAP_TOUCH_STATE_IDLE;
     }

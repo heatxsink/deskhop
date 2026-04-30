@@ -24,6 +24,17 @@ static inline int32_t sign_extend(int32_t value, int bits) {
     return (value ^ mask) - mask;
 }
 
+/* libinput hid-magicmouse.c uses the high 4 bits of byte 8 to encode the
+   per-finger lifecycle state. Anything other than NONE means the finger
+   is currently in contact; NONE means the finger has just lifted. */
+#define MT_TOUCH_STATE_MASK  0xF0
+#define MT_TOUCH_STATE_NONE  0x00
+/* (also defined for reference: 0x30 START, 0x40 DRAG) */
+
+static bool finger_is_down(const uint8_t *t) {
+    return (t[8] & MT_TOUCH_STATE_MASK) != MT_TOUCH_STATE_NONE;
+}
+
 static void decode_finger(const uint8_t *t, mt_finger_t *out) {
     /* Linux: x = ((t[1] << 27) | (t[0] << 19)) >> 19  -- 13-bit signed.
        Equivalent: low 8 bits = t[0], next 5 bits = t[1] & 0x1F. */
@@ -54,15 +65,24 @@ bool mt_decode_report(const uint8_t *report, int len, mt_frame_t *out) {
     int finger_bytes = len - MT_HEADER_SIZE;
     if (finger_bytes % MT_FINGER_SIZE != 0) return false;
 
-    int n = finger_bytes / MT_FINGER_SIZE;
-    if (n > MT_MAX_FINGERS) n = MT_MAX_FINGERS;
+    int n_raw = finger_bytes / MT_FINGER_SIZE;
+    if (n_raw > MT_MAX_FINGERS) n_raw = MT_MAX_FINGERS;
 
-    out->timestamp    = (uint16_t)report[9] | ((uint16_t)report[10] << 8);
-    out->finger_count = (uint8_t)n;
+    out->timestamp = (uint16_t)report[9] | ((uint16_t)report[10] << 8);
 
-    for (int i = 0; i < n; i++) {
-        decode_finger(&report[MT_HEADER_SIZE + i * MT_FINGER_SIZE], &out->fingers[i]);
+    /* Filter out fingers in TOUCH_STATE_NONE (state high-nibble == 0).
+       The trackpad continues to include lifted fingers in frames briefly
+       after lift to signal the lift event. We exclude them so finger_count
+       reflects actual contacts; the state-machine's "ID gone from frame"
+       check then correctly detects lifts. */
+    int n = 0;
+    for (int i = 0; i < n_raw; i++) {
+        const uint8_t *t = &report[MT_HEADER_SIZE + i * MT_FINGER_SIZE];
+        if (!finger_is_down(t)) continue;
+        decode_finger(t, &out->fingers[n]);
+        n++;
     }
+    out->finger_count = (uint8_t)n;
     return true;
 }
 
