@@ -224,20 +224,24 @@ Make macOS see a real Apple Magic Trackpad. macOS binds its native driver. Tap-t
 
 4. **What happens to the keyboard/mouse on the active output during trackpad-mode enumeration cycling?** When the trackpad mounts, the device-side board does `tud_disconnect()` → 100 ms → `tud_connect()`. The host PC briefly loses its keyboard. Acceptable as a one-time cost on plug-in; needs to be flagged in the README.
 
-5. **macOS feature-report probing during driver bind.** macOS may issue `GET_REPORT(Feature)` requests during driver bind that we'd need to forward back to the trackpad. Without a USB capture from a Mac with the trackpad plugged in directly, we don't know. **Plan assumes bidirectional forwarding from the start; if Step 2.1 finds it's unidirectional, we simplify later.**
+5. **Feature-report probing during driver bind.** Confirmed (via Linux kernel source) that the only feature-report traffic is the activation `SET_REPORT` we already issue, plus optional battery `GET_REPORT` polling. **OUT-from-host forwarding still needed for the activation request the host sends to the spoofed trackpad** — but no other traffic. macOS may differ; out of scope for now.
 
-### Step 2.1 — Bringup capture
+### Step 2.1 — Protocol research (DONE)
 
-Plug the trackpad directly into a Mac (no deskhop in the path). Capture USB traffic with one of:
-- macOS USB Prober (free, ships with Xcode developer tools).
-- `tcpdump -i usbmon...` on a Linux box (if you have one with USB monitoring kernel module).
+Originally planned as a macOS USB capture session. Replaced by reading the Linux kernel driver `drivers/hid/hid-magicmouse.c` directly — the user's target is Linux GNOME, and the kernel source is authoritative.
 
-What to identify:
-- **Feature-report traffic** during bind (`GET_REPORT` / `SET_REPORT` with `bmRequestType` `0xA1` or `0x21`, `wValue` high byte `0x03`). Confirms whether OUT/Feature forwarding is needed in addition to IN forwarding.
-- **The activation packet** — confirm Linux's `{0x02, 0x01}` is what macOS sends too, or whether macOS uses a different payload. (Linux open-sources this; macOS doesn't, so this is the way to know.)
-- **What interfaces does macOS actually talk to?** Confirms whether mirroring Instances 1+2 is enough, or if we also need 0+3.
+Findings (cross-referenced against captures already on disk):
 
-This is paid in time, not code. Single afternoon. Output: a one-page note documenting the protocol choices we're making.
+| Question | Answer | Source |
+|---|---|---|
+| Activation feature report payload | `{0x02, 0x01}` | `hid-magicmouse.c:749` (already matches our `magic_trackpad_activate[]`) |
+| Activation transport | `SET_REPORT(Feature)`, Report ID `0x02` | `hid-magicmouse.c:782` |
+| Bind-time control transfers | `hid_parse` + `hid_hw_start` only | `magicmouse_probe`, `hid-magicmouse.c:855` |
+| Periodic OUT reports during use | None | No write paths in driver outside activation |
+| Battery polling | Optional `GET_REPORT` for battery report ID | `hid-magicmouse.c:815` (non-fatal if we ignore) |
+| IN report IDs Linux expects | `0x02` (TRACKPAD2_USB_REPORT_ID) | `hid-magicmouse.c:923` |
+
+**No additional captures required.** The trackpad-side behavior was captured in Phase 1 (`docs/captures/`); the host-side behavior is in the kernel source. We have everything to design the transport layer.
 
 ### Step 2.2 — Trackpad device descriptor
 
