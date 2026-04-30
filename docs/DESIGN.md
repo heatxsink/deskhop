@@ -35,6 +35,12 @@ Deskhop's synthesized generic-mouse interface defeats both bind paths:
 - Gesture decoding for non-Apple touchpads (Logitech, Synaptics, etc.).
 - Full passthrough KVM mode for arbitrary HID devices (issue #207 option 2 — separate effort with broader scope).
 
+## Status (revised)
+
+Phase 1 was implemented and partially worked, but in production builds (no `DH_DEBUG`) it triggers a watchdog reboot loop on trackpad mount. Bisection narrowed the cause to the multi-touch fast-path running on activated reports — most likely in the gesture/emit pipeline, but the exact line wasn't isolated before pivoting. Phase 1 has been gated behind a `DH_TRACKPAD_PHASE1` build flag (OFF by default) so production builds revert to upstream behavior (trackpad as generic mouse, no scroll/gestures). The Phase 1 source remains in-tree for reference and as a future fallback for non-macOS hosts; it will be removed once Phase 2 ships and is verified.
+
+The clearer long-term answer is Phase 2: spoof the Apple device on the deskhop's device side and forward the proprietary HID reports verbatim, letting macOS bind its native trackpad driver. macOS handles all gestures natively. Phase 1's translation layer exists at all because deskhop is an HID interpreter rather than a passthrough KVM — Phase 2 is the architectural fix.
+
 ## Approach
 
 ### Phase 1 — Translate

@@ -18,7 +18,9 @@ _Static_assert(MAX_DEVICES <= CFG_TUH_DEVICE_MAX,
 #define APPLE_VID          0x05AC
 #define MAGIC_TRACKPAD_PID 0x0265
 
+#ifdef DH_TRACKPAD_PHASE1
 static mt_gesture_state_t mt_state;
+#endif
 
 #ifdef DH_DEBUG_TRACKPAD_LED
 /* Set in tuh_hid_set_report_complete_cb. Currently informational only --
@@ -26,6 +28,7 @@ static mt_gesture_state_t mt_state;
 static volatile uint8_t dh_trackpad_activation_state; /* 0=pending, 1=ok, 2=fail */
 #endif
 
+#ifdef DH_TRACKPAD_PHASE1
 /* Switches Magic Trackpad 2 USB out of mouse-emulation mode and into the
    proprietary multi-touch report format. Layout matches Linux's
    drivers/hid/hid-magicmouse.c feature_mt_trackpad2_usb.
@@ -57,6 +60,7 @@ void tuh_hid_set_report_complete_cb(uint8_t dev_addr, uint8_t instance,
     }
 #endif
 }
+#endif /* DH_TRACKPAD_PHASE1 */
 
 #ifdef DH_DEBUG_TRACKPAD
 static void hex_dump(const char *label, const uint8_t *data, int len) {
@@ -275,6 +279,7 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
     /* Kick off the report querying */
     tuh_hid_receive_report(dev_addr, instance);
 
+#ifdef DH_TRACKPAD_PHASE1
     /* Magic Trackpad: switch out of mouse-emulation mode so we get full
        multi-touch frames on Report ID 0x02. We send the activation to the
        mouse-class instance (Instance 1 in the trackpad's enumeration). */
@@ -282,10 +287,9 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
         && iface->product_id == MAGIC_TRACKPAD_PID
         && itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
         mt_gesture_init(&mt_state);
-#ifndef DH_DEBUG_TRACKPAD_BISECT_SKIP_ACTIVATION
         send_magic_trackpad_activation(dev_addr, instance);
-#endif
     }
+#endif
 }
 
 /* Invoked when received report from device via interrupt endpoint */
@@ -308,15 +312,7 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
     (void)dh_trackpad_activation_state;
 #endif
 
-#ifdef DH_DEBUG_TRACKPAD_BISECT_SKIP_DECODE
-    /* Bisect: if defined, the trackpad fast path is bypassed entirely.
-       Reports fall straight to the standard pipeline. Used to determine
-       whether the watchdog reboot is in mount/activation (hang persists)
-       or in the report-handling fast path (hang stops with this defined). */
-    if (iface->vendor_id == APPLE_VID && iface->product_id == MAGIC_TRACKPAD_PID) {
-        /* No-op trackpad branch: fall through. */
-    } else
-#endif
+#ifdef DH_TRACKPAD_PHASE1
     /* Magic Trackpad fast path: if the trackpad is in multi-touch mode the
        payload here is the proprietary frame format, not the standard mouse
        layout the descriptor advertises. Decode it ourselves and feed the
@@ -340,7 +336,6 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
             uint8_t buttons = report[1] & 0x07;
             bool buttons_changed = (buttons != global_state.mouse_buttons);
 
-#ifndef DH_DEBUG_TRACKPAD_BISECT_SKIP_EMIT
             if (moved || buttons_changed) {
                 mouse_values_t values = {
                     .move_x  = dx,
@@ -355,10 +350,7 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                 if (dir != NONE) do_screen_switch(&global_state, dir);
                 global_state.mouse_buttons = buttons;
             }
-#endif
-            (void)moved; (void)buttons; (void)buttons_changed;
 
-#ifndef DH_DEBUG_TRACKPAD_BISECT_SKIP_EMIT
             if (swipe != MT_SWIPE_NONE) {
                 /* Workspace / Spaces switching:
                      GNOME (Linux) default = Ctrl+Alt+Left / Ctrl+Alt+Right
@@ -384,8 +376,6 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                     queue_packet((uint8_t *)&release, KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
                 }
             }
-#endif
-            (void)swipe;
 
 #ifdef DH_DEBUG_TRACKPAD
             /* Per-frame visibility on 3-finger gestures, throttled to 1 in 8
@@ -407,6 +397,7 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
            standard mouse pipeline so the user gets at least basic cursor
            movement. */
     }
+#endif /* DH_TRACKPAD_PHASE1 */
 
     /* Calculate a device index that distinguishes between different devices
        while staying within the bounds of MAX_DEVICES.
