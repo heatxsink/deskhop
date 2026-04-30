@@ -73,25 +73,20 @@ void toggle_gaming_mode_handler(device_t *state, hid_keyboard_report_t *report) 
     send_value(state->gaming_mode, GAMING_MODE_MSG);
 };
 
-/* This key combo locks both outputs simultaneously */
+/* This key combo locks both outputs simultaneously.
+   TODO: make the per-OS lock shortcut configurable via flash config.
+   Hardcoded to Left Super + L for now -- works on GNOME (and most Linux DEs).
+   Was previously OS-conditional (Super+L for Linux/Windows, Ctrl+Cmd+Q for
+   macOS) but the dispatch was unreliable when the configured OS didn't match
+   the actual host PC. Hardcode is a stopgap; configurability is the real fix. */
 void screenlock_hotkey_handler(device_t *state, hid_keyboard_report_t *report) {
-    hid_keyboard_report_t lock_report = {0}, release_keys = {0};
+    hid_keyboard_report_t lock_report = {
+        .modifier  = KEYBOARD_MODIFIER_LEFTGUI,
+        .keycode   = { HID_KEY_L },
+    };
+    hid_keyboard_report_t release_keys = {0};
 
     for (int out = 0; out < NUM_SCREENS; out++) {
-        switch (state->config.output[out].os) {
-            case WINDOWS:
-            case LINUX:
-                lock_report.modifier   = KEYBOARD_MODIFIER_LEFTGUI;
-                lock_report.keycode[0] = HID_KEY_L;
-                break;
-            case MACOS:
-                lock_report.modifier   = KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_LEFTGUI;
-                lock_report.keycode[0] = HID_KEY_Q;
-                break;
-            default:
-                break;
-        }
-
         if (BOARD_ROLE == out) {
             queue_kbd_report(&lock_report, state);
             release_all_keys(state);

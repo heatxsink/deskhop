@@ -407,9 +407,11 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                    on macOS (Ctrl+Alt+Left isn't bound by default), so it's a
                    no-op there rather than firing the wrong action. Once we
                    have a config knob this should become user-selectable. */
+                /* Natural-scroll convention: swipe right -> show what's to the
+                   left (previous workspace). Inverted from finger direction. */
                 uint8_t keycode = (swipe == MT_SWIPE_LEFT)
-                                  ? HID_KEY_ARROW_LEFT
-                                  : HID_KEY_ARROW_RIGHT;
+                                  ? HID_KEY_ARROW_RIGHT
+                                  : HID_KEY_ARROW_LEFT;
                 hid_keyboard_report_t press = {
                     .modifier = KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_LEFTALT,
                     .reserved = 0,
