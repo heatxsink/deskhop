@@ -63,7 +63,13 @@ While we lack the multi-touch decoder, sending activation produces reports that 
 - **Gate activation behind `DH_DEBUG_TRACKPAD`.** Production builds remain unaffected.
 - **Under `DH_DEBUG_TRACKPAD`, also bypass the existing mouse pipeline for trackpad reports** (drop them after logging) so the cursor stays still rather than thrashing. The user loses trackpad input on debug builds — expected, plug a regular mouse alongside.
 
-### Step 1.3 — Device identification
+### Step 1.3 — Device identification (DONE)
+
+`hid_interface_t` now carries `vendor_id` and `product_id`, populated at mount via `tuh_vid_pid_get` and read on every report. Phase 1 trackpad logic no longer queries TinyUSB on the hot path.
+
+The activation feature report, the multi-touch decoder, the gesture state machine, and the pipeline integration are no longer gated on `DH_DEBUG_TRACKPAD` — they ship in default (production) builds. `DH_DEBUG_TRACKPAD` retains its original purpose as a verbose-logging flag (HID descriptor hex dumps at mount, per-frame 3-finger gesture state) for future work.
+
+#### Step 1.3 — Device identification (original plan)
 
 Extend the per-interface state to remember VID and PID so the report path can branch on them without re-querying TinyUSB on every report.
 

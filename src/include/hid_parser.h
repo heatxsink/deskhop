@@ -147,6 +147,10 @@ struct hid_interface_t {
     process_report_f report_handler[MAX_REPORTS];
     uint8_t protocol;
     bool uses_report_id;
+
+    /* Cached at mount time so we don't query TinyUSB on every report. */
+    uint16_t vendor_id;
+    uint16_t product_id;
 };
 
 typedef struct {

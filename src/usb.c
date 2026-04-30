@@ -15,25 +15,10 @@
 _Static_assert(MAX_DEVICES <= CFG_TUH_DEVICE_MAX,
                "MAX_DEVICES must not exceed CFG_TUH_DEVICE_MAX");
 
-#ifdef DH_DEBUG_TRACKPAD
-static mt_gesture_state_t mt_state;
-#endif
-
-#ifdef DH_DEBUG_TRACKPAD
-#define APPLE_VID 0x05AC
+#define APPLE_VID          0x05AC
 #define MAGIC_TRACKPAD_PID 0x0265
 
-static void hex_dump(const char *label, const uint8_t *data, int len) {
-    dh_debug_printf("%s (len=%d):\n", label, len);
-    char line[80];
-    for (int i = 0; i < len; i += 16) {
-        int pos = snprintf(line, sizeof(line), "  %04x:", i);
-        for (int j = 0; j < 16 && i + j < len; j++) {
-            pos += snprintf(line + pos, sizeof(line) - pos, " %02x", data[i + j]);
-        }
-        dh_debug_printf("%s\n", line);
-    }
-}
+static mt_gesture_state_t mt_state;
 
 /* Switches Magic Trackpad 2 USB out of mouse-emulation mode and into the
    proprietary multi-touch report format. Layout matches Linux's
@@ -41,7 +26,7 @@ static void hex_dump(const char *label, const uint8_t *data, int len) {
 
    Linux's usbhid_set_raw_report sends the buffer including the report ID byte
    AS the wire payload (count=2, buf={0x02,0x01}). TinyUSB's tuh_hid_set_report
-   only encodes the report ID in wValue — the buffer is the wire payload as-is.
+   only encodes the report ID in wValue -- the buffer is the wire payload as-is.
    So we have to include the report ID byte ourselves. */
 static uint8_t magic_trackpad_activate[] = { 0x02, 0x01 };
 
@@ -59,6 +44,19 @@ void tuh_hid_set_report_complete_cb(uint8_t dev_addr, uint8_t instance,
                                     uint16_t len) {
     dh_debug_printf("set_report complete: dev=%u inst=%u id=%02x type=%u len=%u\n",
                     dev_addr, instance, report_id, report_type, len);
+}
+
+#ifdef DH_DEBUG_TRACKPAD
+static void hex_dump(const char *label, const uint8_t *data, int len) {
+    dh_debug_printf("%s (len=%d):\n", label, len);
+    char line[80];
+    for (int i = 0; i < len; i += 16) {
+        int pos = snprintf(line, sizeof(line), "  %04x:", i);
+        for (int j = 0; j < 16 && i + j < len; j++) {
+            pos += snprintf(line + pos, sizeof(line) - pos, " %02x", data[i + j]);
+        }
+        dh_debug_printf("%s\n", line);
+    }
 }
 #endif
 
@@ -196,20 +194,20 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
     if (dev_addr > MAX_DEVICES || instance >= MAX_INTERFACES)
         return;
 
-#ifdef DH_DEBUG_TRACKPAD
-    {
-        uint16_t vid = 0, pid = 0;
-        tuh_vid_pid_get(dev_addr, &vid, &pid);
-        dh_debug_printf("HID mount: dev_addr=%u instance=%u itf_protocol=%u vid=%04x pid=%04x\n",
-                        dev_addr, instance, itf_protocol, vid, pid);
-        hex_dump("HID descriptor", desc_report, desc_len);
-    }
-#endif
-
     /* Get interface information */
     hid_interface_t *iface = &global_state.iface[dev_addr-1][instance];
 
     iface->protocol = tuh_hid_get_protocol(dev_addr, instance);
+
+    /* Cache VID/PID so the report path doesn't have to re-query TinyUSB. */
+    tuh_vid_pid_get(dev_addr, &iface->vendor_id, &iface->product_id);
+
+#ifdef DH_DEBUG_TRACKPAD
+    dh_debug_printf("HID mount: dev_addr=%u instance=%u itf_protocol=%u vid=%04x pid=%04x\n",
+                    dev_addr, instance, itf_protocol,
+                    iface->vendor_id, iface->product_id);
+    hex_dump("HID descriptor", desc_report, desc_len);
+#endif
 
     /* Parse the report descriptor into our internal structure. */
     parse_report_descriptor(iface, desc_report, desc_len);
@@ -265,17 +263,15 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
     /* Kick off the report querying */
     tuh_hid_receive_report(dev_addr, instance);
 
-#ifdef DH_DEBUG_TRACKPAD
-    {
-        uint16_t vid = 0, pid = 0;
-        tuh_vid_pid_get(dev_addr, &vid, &pid);
-        if (vid == APPLE_VID && pid == MAGIC_TRACKPAD_PID
-            && itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
-            mt_gesture_init(&mt_state);
-            send_magic_trackpad_activation(dev_addr, instance);
-        }
+    /* Magic Trackpad: switch out of mouse-emulation mode so we get full
+       multi-touch frames on Report ID 0x02. We send the activation to the
+       mouse-class instance (Instance 1 in the trackpad's enumeration). */
+    if (iface->vendor_id == APPLE_VID
+        && iface->product_id == MAGIC_TRACKPAD_PID
+        && itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
+        mt_gesture_init(&mt_state);
+        send_magic_trackpad_activation(dev_addr, instance);
     }
-#endif
 }
 
 /* Invoked when received report from device via interrupt endpoint */
@@ -285,92 +281,83 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
     if (dev_addr > MAX_DEVICES || instance >= MAX_INTERFACES)
         return;
 
-#ifdef DH_DEBUG_TRACKPAD
-    {
-        uint16_t vid = 0, pid = 0;
-        tuh_vid_pid_get(dev_addr, &vid, &pid);
-        if (vid == APPLE_VID && pid == MAGIC_TRACKPAD_PID) {
-            /* Try to decode as a multi-touch frame. If it parses we are in
-               multi-touch mode and the existing mouse parser would misread the
-               payload, so we MUST shortcut. If it doesn't parse the trackpad
-               is still in mouse-emulation mode (pre-activation reports) and we
-               just drop them -- pointer movement returns once activation lands. */
-            mt_frame_t frame;
-            if (mt_decode_report(report, len, &frame)) {
-                int32_t dx = 0, dy = 0, wheel = 0, pan = 0;
-                mt_swipe_t swipe = MT_SWIPE_NONE;
-                bool moved = mt_gesture_step(&mt_state, &frame,
-                                             &dx, &dy, &wheel, &pan, &swipe);
+    hid_interface_t *iface = &global_state.iface[dev_addr-1][instance];
 
-                /* Linux's hid-magicmouse reads data[1] as the click bitmap for
-                   trackpad2 (BTN_MOUSE = data[1] & 1). We mirror that. */
-                uint8_t buttons = report[1] & 0x07;
-                bool buttons_changed = (buttons != global_state.mouse_buttons);
+    /* Magic Trackpad fast path: if the trackpad is in multi-touch mode the
+       payload here is the proprietary frame format, not the standard mouse
+       layout the descriptor advertises. Decode it ourselves and feed the
+       result through the existing mouse pipeline + (for swipes) the keyboard
+       pipeline. Pre-activation reports won't decode as multi-touch frames
+       (length mismatch) so we just drop them -- pointer movement returns
+       once activation lands. */
+    if (iface->vendor_id == APPLE_VID && iface->product_id == MAGIC_TRACKPAD_PID) {
+        mt_frame_t frame;
+        if (mt_decode_report(report, len, &frame)) {
+            int32_t dx = 0, dy = 0, wheel = 0, pan = 0;
+            mt_swipe_t swipe = MT_SWIPE_NONE;
+            bool moved = mt_gesture_step(&mt_state, &frame,
+                                         &dx, &dy, &wheel, &pan, &swipe);
 
-                if (moved || buttons_changed) {
-                    mouse_values_t values = {
-                        .move_x  = dx,
-                        .move_y  = dy,
-                        .wheel   = wheel,
-                        .pan     = pan,
-                        .buttons = buttons,
-                    };
-                    enum screen_pos_e dir = update_mouse_position(&global_state, &values);
-                    mouse_report_t mr = create_mouse_report(&global_state, &values);
-                    output_mouse_report(&mr, &global_state);
-                    if (dir != NONE) do_screen_switch(&global_state, dir);
-                    global_state.mouse_buttons = buttons;
-                }
+            /* Linux's hid-magicmouse reads data[1] as the click bitmap for
+               trackpad2 (BTN_MOUSE = data[1] & 1). We mirror that. */
+            uint8_t buttons = report[1] & 0x07;
+            bool buttons_changed = (buttons != global_state.mouse_buttons);
 
-                if (swipe != MT_SWIPE_NONE) {
-                    /* Workspace / Spaces switching:
-                         GNOME (Linux) default = Ctrl+Alt+Left / Ctrl+Alt+Right
-                         macOS default          = Ctrl+Left / Ctrl+Right
-                       Including Alt as well as Ctrl in the modifier matches
-                       GNOME and is harmless on macOS (Ctrl+Alt+Left isn't
-                       bound by default on macOS, so it's a no-op there
-                       rather than the wrong action). Once we have a config
-                       knob this should become user-selectable. */
-                    uint8_t keycode = (swipe == MT_SWIPE_LEFT)
-                                      ? HID_KEY_ARROW_LEFT
-                                      : HID_KEY_ARROW_RIGHT;
-                    hid_keyboard_report_t press = {
-                        .modifier = KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_LEFTALT,
-                        .reserved = 0,
-                        .keycode  = { keycode, 0, 0, 0, 0, 0 },
-                    };
-                    hid_keyboard_report_t release = { 0 };
-                    if (CURRENT_BOARD_IS_ACTIVE_OUTPUT) {
-                        queue_kbd_report(&press, &global_state);
-                        queue_kbd_report(&release, &global_state);
-                    } else {
-                        queue_packet((uint8_t *)&press,   KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
-                        queue_packet((uint8_t *)&release, KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
-                    }
-                    dh_debug_printf("3-finger swipe %s -> Ctrl+Alt+%s (route=%s)\n",
-                                    swipe == MT_SWIPE_LEFT ? "LEFT" : "RIGHT",
-                                    swipe == MT_SWIPE_LEFT ? "Left" : "Right",
-                                    CURRENT_BOARD_IS_ACTIVE_OUTPUT ? "local" : "uart");
-                }
+            if (moved || buttons_changed) {
+                mouse_values_t values = {
+                    .move_x  = dx,
+                    .move_y  = dy,
+                    .wheel   = wheel,
+                    .pan     = pan,
+                    .buttons = buttons,
+                };
+                enum screen_pos_e dir = update_mouse_position(&global_state, &values);
+                mouse_report_t mr = create_mouse_report(&global_state, &values);
+                output_mouse_report(&mr, &global_state);
+                if (dir != NONE) do_screen_switch(&global_state, dir);
+                global_state.mouse_buttons = buttons;
+            }
 
-                /* Periodic visibility on 3-finger frames so we can tell whether
-                   the gesture is recognized but the threshold isn't crossing,
-                   versus the trackpad not reporting 3 fingers at all. Limited
-                   to every 8th frame to avoid CDC backpressure. */
-                static uint8_t three_finger_log_div = 0;
-                if (frame.finger_count == 3 && (++three_finger_log_div & 0x07) == 0) {
-                    dh_debug_printf("3F frame: accum_x=%ld emitted=%d\n",
-                                    (long)mt_state.swipe_accum_x,
-                                    mt_state.swipe_emitted ? 1 : 0);
+            if (swipe != MT_SWIPE_NONE) {
+                /* Workspace / Spaces switching:
+                     GNOME (Linux) default = Ctrl+Alt+Left / Ctrl+Alt+Right
+                     macOS default         = Ctrl+Left / Ctrl+Right
+                   Including Alt as well as Ctrl matches GNOME and is harmless
+                   on macOS (Ctrl+Alt+Left isn't bound by default), so it's a
+                   no-op there rather than firing the wrong action. Once we
+                   have a config knob this should become user-selectable. */
+                uint8_t keycode = (swipe == MT_SWIPE_LEFT)
+                                  ? HID_KEY_ARROW_LEFT
+                                  : HID_KEY_ARROW_RIGHT;
+                hid_keyboard_report_t press = {
+                    .modifier = KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_LEFTALT,
+                    .reserved = 0,
+                    .keycode  = { keycode, 0, 0, 0, 0, 0 },
+                };
+                hid_keyboard_report_t release = { 0 };
+                if (CURRENT_BOARD_IS_ACTIVE_OUTPUT) {
+                    queue_kbd_report(&press, &global_state);
+                    queue_kbd_report(&release, &global_state);
+                } else {
+                    queue_packet((uint8_t *)&press,   KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
+                    queue_packet((uint8_t *)&release, KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
                 }
             }
-            tuh_hid_receive_report(dev_addr, instance);
-            return;
-        }
-    }
-#endif
 
-    hid_interface_t *iface = &global_state.iface[dev_addr-1][instance];
+#ifdef DH_DEBUG_TRACKPAD
+            /* Per-frame visibility on 3-finger gestures, throttled to 1 in 8
+               so CDC isn't drowned. Useful when tuning the swipe threshold. */
+            static uint8_t three_finger_log_div = 0;
+            if (frame.finger_count == 3 && (++three_finger_log_div & 0x07) == 0) {
+                dh_debug_printf("3F frame: accum_x=%ld emitted=%d\n",
+                                (long)mt_state.swipe_accum_x,
+                                mt_state.swipe_emitted ? 1 : 0);
+            }
+#endif
+        }
+        tuh_hid_receive_report(dev_addr, instance);
+        return;
+    }
 
     /* Calculate a device index that distinguishes between different devices
        while staying within the bounds of MAX_DEVICES.
