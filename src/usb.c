@@ -10,9 +10,14 @@
  */
 
 #include "main.h"
+#include "magic_trackpad.h"
 
 _Static_assert(MAX_DEVICES <= CFG_TUH_DEVICE_MAX,
                "MAX_DEVICES must not exceed CFG_TUH_DEVICE_MAX");
+
+#ifdef DH_DEBUG_TRACKPAD
+static mt_gesture_state_t mt_state;
+#endif
 
 #ifdef DH_DEBUG_TRACKPAD
 #define APPLE_VID 0x05AC
@@ -266,6 +271,7 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
         tuh_vid_pid_get(dev_addr, &vid, &pid);
         if (vid == APPLE_VID && pid == MAGIC_TRACKPAD_PID
             && itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
+            mt_gesture_init(&mt_state);
             send_magic_trackpad_activation(dev_addr, instance);
         }
     }
@@ -283,14 +289,30 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
     {
         uint16_t vid = 0, pid = 0;
         tuh_vid_pid_get(dev_addr, &vid, &pid);
-        if (vid == APPLE_VID) {
-            dh_debug_printf("HID report %04x:%04x dev_addr=%u instance=%u\n",
-                            vid, pid, dev_addr, instance);
-            hex_dump("  report", report, len);
-
-            /* Activation puts the trackpad into multi-touch mode and the existing
-               mouse parser would misread the new payload as garbage X/Y deltas.
-               Drop reports here, keep requesting more, and return. */
+        if (vid == APPLE_VID && pid == MAGIC_TRACKPAD_PID) {
+            /* Try to decode as a multi-touch frame. If it parses we are in
+               multi-touch mode and the existing mouse parser would misread the
+               payload, so we MUST shortcut. If it doesn't parse the trackpad
+               is still in mouse-emulation mode (pre-activation reports) and we
+               just drop them -- pointer movement returns once activation lands. */
+            mt_frame_t frame;
+            if (mt_decode_report(report, len, &frame)) {
+                int32_t dx = 0, dy = 0, wheel = 0, pan = 0;
+                bool emit = mt_gesture_step(&mt_state, &frame, &dx, &dy, &wheel, &pan);
+                if (emit) {
+                    mouse_values_t values = {
+                        .move_x  = dx,
+                        .move_y  = dy,
+                        .wheel   = wheel,
+                        .pan     = pan,
+                        .buttons = global_state.mouse_buttons,
+                    };
+                    enum screen_pos_e dir = update_mouse_position(&global_state, &values);
+                    mouse_report_t mr = create_mouse_report(&global_state, &values);
+                    output_mouse_report(&mr, &global_state);
+                    if (dir != NONE) do_screen_switch(&global_state, dir);
+                }
+            }
             tuh_hid_receive_report(dev_addr, instance);
             return;
         }
