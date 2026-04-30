@@ -282,7 +282,9 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
         && iface->product_id == MAGIC_TRACKPAD_PID
         && itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
         mt_gesture_init(&mt_state);
+#ifndef DH_DEBUG_TRACKPAD_BISECT_SKIP_ACTIVATION
         send_magic_trackpad_activation(dev_addr, instance);
+#endif
     }
 }
 
@@ -306,6 +308,15 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
     (void)dh_trackpad_activation_state;
 #endif
 
+#ifdef DH_DEBUG_TRACKPAD_BISECT_SKIP_DECODE
+    /* Bisect: if defined, the trackpad fast path is bypassed entirely.
+       Reports fall straight to the standard pipeline. Used to determine
+       whether the watchdog reboot is in mount/activation (hang persists)
+       or in the report-handling fast path (hang stops with this defined). */
+    if (iface->vendor_id == APPLE_VID && iface->product_id == MAGIC_TRACKPAD_PID) {
+        /* No-op trackpad branch: fall through. */
+    } else
+#endif
     /* Magic Trackpad fast path: if the trackpad is in multi-touch mode the
        payload here is the proprietary frame format, not the standard mouse
        layout the descriptor advertises. Decode it ourselves and feed the
