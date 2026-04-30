@@ -10,7 +10,8 @@ option(DH_DEBUG "Build a debug version" OFF)
 option(DH_DEBUG_CDC_FLASH "Enable CDC command to trigger bootloader mode" OFF)
 option(DH_DEBUG_TRACKPAD "Log HID descriptors and Apple HID reports for trackpad work (requires DH_DEBUG)" OFF)
 option(DH_DEBUG_TRACKPAD_LED "Toggle the onboard LED on every Magic Trackpad report received (no CDC needed)" OFF)
-option(DH_TRACKPAD_PHASE1 "Enable Phase 1 trackpad gesture translation (activation + decode + scroll/swipe synthesis). OFF in prod -- Phase 1 has a watchdog reboot bug under investigation. Phase 2 (descriptor spoof, native macOS gestures) is the long-term fix." OFF)
+option(DH_TRACKPAD_PHASE1 "Enable Phase 1 trackpad gesture translation (activation + decode + scroll/swipe synthesis). OFF in prod -- Phase 1 has a watchdog reboot bug under investigation." OFF)
+option(DH_TRACKPAD_PHASE1_SKIP_EMIT "Bisect aid: with PHASE1=ON, run decode + gesture state machine but skip the mouse/keyboard emit phase. If reboot stops with this set, the bug is in emit." OFF)
 
 ## Hardware Configuration
 set(DP_PIN_DEFAULT 14 CACHE STRING "Default USB D+ Pin Number")
@@ -143,6 +144,13 @@ endif()
 
 if (DH_TRACKPAD_PHASE1)
   add_definitions(-DDH_TRACKPAD_PHASE1)
+endif()
+
+if (DH_TRACKPAD_PHASE1_SKIP_EMIT)
+  if (NOT DH_TRACKPAD_PHASE1)
+    message(FATAL_ERROR "DH_TRACKPAD_PHASE1_SKIP_EMIT only meaningful with DH_TRACKPAD_PHASE1=ON.")
+  endif()
+  add_definitions(-DDH_TRACKPAD_PHASE1_SKIP_EMIT)
 endif()
   
 target_include_directories(${binary} PUBLIC ${COMMON_INCLUDES})
