@@ -38,8 +38,11 @@ hotkey_combo_t hotkeys[] = {
      .acknowledge    = true,
      .action_handler = &switchlock_hotkey_handler},
 
-    /* Screen lock */
-    {.modifier       = KEYBOARD_MODIFIER_RIGHTCTRL,
+    /* Screen lock -- Left Super + L (matches the GNOME default lock shortcut).
+       Deskhop intercepts this combo instead of passing it through, then
+       re-emits Left Super + L to BOTH outputs so the user's single keypress
+       locks both screens at once. */
+    {.modifier       = KEYBOARD_MODIFIER_LEFTGUI,
      .keys           = {HID_KEY_L},
      .key_count      = 1,
      .acknowledge    = true,
