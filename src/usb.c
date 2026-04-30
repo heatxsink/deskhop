@@ -323,15 +323,19 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                 }
 
                 if (swipe != MT_SWIPE_NONE) {
-                    /* macOS Spaces switching: Ctrl+Left / Ctrl+Right. Has to
-                       route the same way mouse reports do -- if this board is
-                       the active output, queue locally; otherwise UART it
-                       across to the board that owns the active host. */
+                    /* Workspace / Spaces switching:
+                         GNOME (Linux) default = Ctrl+Alt+Left / Ctrl+Alt+Right
+                         macOS default          = Ctrl+Left / Ctrl+Right
+                       Including Alt as well as Ctrl in the modifier matches
+                       GNOME and is harmless on macOS (Ctrl+Alt+Left isn't
+                       bound by default on macOS, so it's a no-op there
+                       rather than the wrong action). Once we have a config
+                       knob this should become user-selectable. */
                     uint8_t keycode = (swipe == MT_SWIPE_LEFT)
                                       ? HID_KEY_ARROW_LEFT
                                       : HID_KEY_ARROW_RIGHT;
                     hid_keyboard_report_t press = {
-                        .modifier = KEYBOARD_MODIFIER_LEFTCTRL,
+                        .modifier = KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_LEFTALT,
                         .reserved = 0,
                         .keycode  = { keycode, 0, 0, 0, 0, 0 },
                     };
@@ -343,7 +347,7 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                         queue_packet((uint8_t *)&press,   KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
                         queue_packet((uint8_t *)&release, KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
                     }
-                    dh_debug_printf("3-finger swipe %s -> Ctrl+%s (route=%s)\n",
+                    dh_debug_printf("3-finger swipe %s -> Ctrl+Alt+%s (route=%s)\n",
                                     swipe == MT_SWIPE_LEFT ? "LEFT" : "RIGHT",
                                     swipe == MT_SWIPE_LEFT ? "Left" : "Right",
                                     CURRENT_BOARD_IS_ACTIVE_OUTPUT ? "local" : "uart");
