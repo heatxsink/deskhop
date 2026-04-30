@@ -132,6 +132,23 @@ Supposedly built in to prevent computer from entering standby, but truth be told
 
 Potential usage example - I have a buggy USB dock that won't resume video from standby, so not allowing it to sleep can be a handy workaround.
 
+### Apple Magic Trackpad support (Linux)
+
+When an Apple Magic Trackpad 2 (USB) is plugged into a deskhop host port, the device-side descriptor switches to advertise itself as the trackpad (Apple VID `0x05AC` / PID `0x0265`). Linux's built-in `hid-magicmouse` driver then binds and handles tap-to-click, two-finger scroll, three- and four-finger swipes natively.
+
+Side effect: `hid-magicmouse` claims **all** HID interfaces of any matching Apple-VID device, with no kernel-side option to filter by interface. Without intervention this breaks deskhop's keyboard interface (which lives on the same USB device while in trackpad mode). To fix:
+
+```
+sudo cp misc/99-deskhop-trackpad.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+```
+
+Then unplug and replug the trackpad. The rule unbinds `hid-magicmouse` from deskhop's keyboard and helper-mouse interfaces and rebinds them to `hid-generic` so they keep working. Interface 2 (the actual trackpad) stays with `hid-magicmouse`. The match is narrowed via the deskhop product string so a real Magic Trackpad plugged in alongside is unaffected.
+
+Cross-screen mouse-drag switching is disabled while the trackpad is connected (deskhop can no longer see the cursor's absolute position under raw passthrough). Use the keyboard shortcut to switch outputs.
+
+macOS support is not yet implemented and Windows has no native Magic Trackpad driver — for now this is Linux-only.
+
 ## Hardware
 
 [The circuit](schematics/DeskHop_v1.1.pdf) is based on two Raspberry Pi Pico boards, chosen because they are cheap (4.10 € / pc), can be hand soldered and most suppliers have them in stock.

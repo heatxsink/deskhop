@@ -1,0 +1,36 @@
+# Deskhop Magic Trackpad spoof -- udev rule
+#
+# When a Magic Trackpad is plugged into deskhop, the firmware spoofs the
+# device-side USB descriptor as Apple Magic Trackpad 2 (VID 0x05AC, PID
+# 0x0265) so that Linux's hid-magicmouse driver binds and handles native
+# multi-touch gestures.
+#
+# Side effect: hid-magicmouse claims ALL HID interfaces of any matching
+# Apple-VID device, with no way to filter by interface. That includes
+# deskhop's own keyboard interface (bInterfaceNumber=0) and relative-mouse
+# helper (bInterfaceNumber=1), which then break because magicmouse doesn't
+# know how to handle them.
+#
+# This rule unbinds hid-magicmouse from those two interfaces and rebinds
+# them to hid-generic so deskhop's keyboard and mouse keep working.
+# Interface 2 stays with hid-magicmouse for the actual trackpad.
+#
+# Match is narrowed to deskhop specifically via the product string so a
+# REAL Magic Trackpad plugged into the same machine is unaffected.
+#
+# Install:
+#   sudo cp misc/99-deskhop-trackpad.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   # then unplug + replug the trackpad
+
+ACTION=="add", SUBSYSTEM=="hid", DRIVERS=="magicmouse", \
+  ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="0265", \
+  ATTRS{product}=="DeskHop Switch", \
+  ATTRS{bInterfaceNumber}=="00", \
+  RUN+="/bin/sh -c 'echo %k > /sys/bus/hid/drivers/magicmouse/unbind; echo %k > /sys/bus/hid/drivers/hid-generic/bind'"
+
+ACTION=="add", SUBSYSTEM=="hid", DRIVERS=="magicmouse", \
+  ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="0265", \
+  ATTRS{product}=="DeskHop Switch", \
+  ATTRS{bInterfaceNumber}=="01", \
+  RUN+="/bin/sh -c 'echo %k > /sys/bus/hid/drivers/magicmouse/unbind; echo %k > /sys/bus/hid/drivers/hid-generic/bind'"
