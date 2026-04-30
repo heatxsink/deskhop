@@ -131,25 +131,26 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
 #ifdef DH_TRACKPAD_TAP_TO_CLICK
     tp_tap_t *tap = (tp_tap_t *)s->tap;
     if (tap) {
+        /* Tap event-gen uses tap->touches[slot].state as the "is this
+           finger currently tracked" indicator -- decoupled from the
+           motion logic's prev_id list below. The idle tick can
+           synthesize RELEASE events by clearing this state without
+           breaking the motion tracker's frame-to-frame deltas. */
+
         /* TIMER: synthesize a TIMEOUT event if the deadline has passed.
-           Timer arming uses absolute time (now_us + period). Use signed
-           subtraction for wraparound-safe comparison. */
+           Wraparound-safe signed compare. */
         if (tap->timer_us != 0 && (int32_t)(now_us - tap->timer_us) >= 0) {
             tap->timer_us = 0;
             tp_tap_handle_event(tap, 0, TAP_EVENT_TIMEOUT, now_us);
         }
 
-        /* TOUCH events for fingers present this frame but not in prev_id.
-           Use Apple's finger_id (low 4 bits) as the touch slot, modulo
-           MT_MAX_FINGERS to keep within array bounds. */
+        /* TOUCH events for fingers whose slot is IDLE, MOTION events for
+           fingers whose slot is in TOUCH and have moved past threshold.
+           Slot = Apple finger_id mod MT_MAX_FINGERS. */
         for (int i = 0; i < frame->finger_count && i < MT_MAX_FINGERS; i++) {
             uint8_t id = frame->fingers[i].finger_id;
             uint8_t slot = id % MT_MAX_FINGERS;
-            bool was_present = false;
-            for (int j = 0; j < s->prev_count; j++) {
-                if (s->prev_id[j] == id) { was_present = true; break; }
-            }
-            if (!was_present) {
+            if (tap->touches[slot].state == TAP_TOUCH_STATE_IDLE) {
                 tap->touches[slot].state     = TAP_TOUCH_STATE_TOUCH;
                 tap->touches[slot].initial_x = frame->fingers[i].x;
                 tap->touches[slot].initial_y = frame->fingers[i].y;
@@ -157,8 +158,7 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
                 tap->touches[slot].is_palm   = false;
                 if (tap->nfingers_down < MT_MAX_FINGERS) tap->nfingers_down++;
                 tp_tap_handle_event(tap, slot, TAP_EVENT_TOUCH, now_us);
-            } else if (tap->touches[slot].state != TAP_TOUCH_STATE_DEAD) {
-                /* Existing finger -- check motion past threshold. */
+            } else if (tap->touches[slot].state == TAP_TOUCH_STATE_TOUCH) {
                 int32_t dx = frame->fingers[i].x - tap->touches[slot].initial_x;
                 int32_t dy = frame->fingers[i].y - tap->touches[slot].initial_y;
                 int32_t dist_sq = dx * dx + dy * dy;
@@ -168,30 +168,27 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
             }
         }
 
-        /* RELEASE events for fingers in prev_id but not in this frame. */
-        for (int j = 0; j < s->prev_count; j++) {
-            uint8_t id = s->prev_id[j];
-            bool still_present = false;
+        /* RELEASE events for any slot that's tracked but has no
+           corresponding finger in the current frame. */
+        for (int slot = 0; slot < MT_MAX_FINGERS; slot++) {
+            if (tap->touches[slot].state == TAP_TOUCH_STATE_IDLE) continue;
+            bool found = false;
             for (int i = 0; i < frame->finger_count && i < MT_MAX_FINGERS; i++) {
-                if (frame->fingers[i].finger_id == id) { still_present = true; break; }
+                if ((frame->fingers[i].finger_id % MT_MAX_FINGERS) == slot) {
+                    found = true;
+                    break;
+                }
             }
-            if (!still_present) {
-                uint8_t slot = id % MT_MAX_FINGERS;
+            if (!found) {
                 if (tap->nfingers_down) tap->nfingers_down--;
-                tp_tap_handle_event(tap, slot, TAP_EVENT_RELEASE, now_us);
+                tp_tap_handle_event(tap, (uint8_t)slot, TAP_EVENT_RELEASE, now_us);
                 tap->touches[slot].state = TAP_TOUCH_STATE_IDLE;
             }
         }
 
         /* BUTTON events on physical click rising/falling edge. */
         if (button_held != s->prev_button_held) {
-            bool pressed = (button_held != MT_BTN_NONE);
             tp_tap_handle_event(tap, 0, TAP_EVENT_BUTTON, now_us);
-            (void)pressed;  /* state machine looks at its own flag, libinput
-                               separates BUTTON event from press direction;
-                               our state machine treats BUTTON as "physical
-                               click occurred, abandon the tap" which is
-                               direction-agnostic */
         }
         s->prev_button_held = (uint8_t)button_held;
     }
@@ -321,24 +318,33 @@ bool mt_gesture_idle_tick(mt_gesture_state_t *s, uint32_t now_us) {
     tp_tap_t *tap = (tp_tap_t *)s->tap;
     if (!tap) return false;
 
-    /* Timer expiry only. Wraparound-safe signed compare.
-       The earlier "synthesize RELEASE on inactivity" logic was too
-       aggressive -- the trackpad's frame rate dips below the threshold
-       during slow finger movement, which fired phantom release events
-       and broke cursor tracking. Lift detection now relies on the
-       trackpad's per-finger TOUCH_STATE_NONE record, which the decoder
-       prunes from frame->fingers; that produces a normal
-       finger-count-decrement RELEASE in mt_gesture_step. If a particular
-       trackpad doesn't send the lift record we'll need a smarter heuristic
-       (gated on tap state being TOUCH, with a longer threshold) -- track
-       that as a known limitation. */
+    bool had_pending = (tap->pending_count > 0);
+
+    /* Timer expiry. Wraparound-safe signed compare. */
     if (tap->timer_us != 0 && (int32_t)(now_us - tap->timer_us) >= 0) {
         tap->timer_us = 0;
         tp_tap_handle_event(tap, 0, TAP_EVENT_TIMEOUT, now_us);
-        return tap->pending_count > 0;
     }
 
-    return false;
+    /* Inactivity-based RELEASE synthesis. The trackpad goes silent when
+       all fingers lift -- there's no terminator frame, so the only way
+       to detect the lift is "no MT frames for a while." Threshold is
+       conservative (200 ms) to avoid firing during slow finger movement
+       where the trackpad's report rate naturally drops. Motion logic
+       (s->prev_id, prev_count) is untouched -- this only flips the
+       per-slot tap state. */
+    #define MT_TAP_LIFT_INACTIVE_US 200000UL
+    if (tap->nfingers_down > 0 &&
+        (int32_t)(now_us - s->last_mt_frame_us) >= MT_TAP_LIFT_INACTIVE_US) {
+        for (int slot = 0; slot < MT_MAX_FINGERS; slot++) {
+            if (tap->touches[slot].state == TAP_TOUCH_STATE_IDLE) continue;
+            if (tap->nfingers_down) tap->nfingers_down--;
+            tp_tap_handle_event(tap, (uint8_t)slot, TAP_EVENT_RELEASE, now_us);
+            tap->touches[slot].state = TAP_TOUCH_STATE_IDLE;
+        }
+    }
+
+    return had_pending || (tap->pending_count > 0);
 #else
     (void)s; (void)now_us;
     return false;
