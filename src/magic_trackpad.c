@@ -199,6 +199,12 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
     (void)now_us;  /* unused when tap-to-click disabled */
 #endif
 
+    /* Mark this MT frame's arrival. Used by the idle tick to detect when
+       the trackpad has stopped transmitting (i.e. all fingers have lifted)
+       and synthesize the RELEASE events the state machine needs to fire
+       a tap. */
+    s->last_mt_frame_us = now_us;
+
     /* No fingers: just clear state, no signal. */
     if (frame->finger_count == 0) {
         s->prev_count = 0;
@@ -308,4 +314,46 @@ save_and_return:
     }
     s->have_prev = true;
     return emit;
+}
+
+bool mt_gesture_idle_tick(mt_gesture_state_t *s, uint32_t now_us) {
+#ifdef DH_TRACKPAD_TAP_TO_CLICK
+    tp_tap_t *tap = (tp_tap_t *)s->tap;
+    if (!tap) return false;
+
+    bool had_pending = (tap->pending_count > 0);
+
+    /* Timer expiry. Wraparound-safe signed compare. */
+    if (tap->timer_us != 0 && (int32_t)(now_us - tap->timer_us) >= 0) {
+        tap->timer_us = 0;
+        tp_tap_handle_event(tap, 0, TAP_EVENT_TIMEOUT, now_us);
+    }
+
+    /* Lift detection via inactivity. If the trackpad hasn't sent an
+       active MT frame in MT_LIFT_INACTIVE_US and we still think there
+       are fingers down, synthesize RELEASE events for them. The
+       trackpad goes silent after the last finger lifts; this is the
+       only signal we get. Threshold (50ms) is comfortably larger than
+       inter-frame at peak rate (~4ms at 250Hz) but smaller than the
+       tap timeout (180ms) so taps still register quickly. */
+    #define MT_LIFT_INACTIVE_US 50000UL
+    if (s->have_prev && s->prev_count > 0 &&
+        (int32_t)(now_us - s->last_mt_frame_us) >= MT_LIFT_INACTIVE_US) {
+        for (int j = 0; j < s->prev_count; j++) {
+            uint8_t id   = s->prev_id[j];
+            uint8_t slot = id % MT_MAX_FINGERS;
+            if (tap->nfingers_down) tap->nfingers_down--;
+            tp_tap_handle_event(tap, slot, TAP_EVENT_RELEASE, now_us);
+            tap->touches[slot].state = TAP_TOUCH_STATE_IDLE;
+        }
+        /* Clear prev so we don't re-fire releases on the next tick. */
+        s->prev_count = 0;
+        s->have_prev  = false;
+    }
+
+    return had_pending || (tap->pending_count > 0);
+#else
+    (void)s; (void)now_us;
+    return false;
+#endif
 }
