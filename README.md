@@ -132,6 +132,19 @@ Supposedly built in to prevent computer from entering standby, but truth be told
 
 Potential usage example - I have a buggy USB dock that won't resume video from standby, so not allowing it to sleep can be a handy workaround.
 
+### Apple Magic Trackpad gestures
+
+When an Apple Magic Trackpad 2 (USB) is plugged into a deskhop host port, deskhop activates its multi-touch mode and translates gestures into standard mouse and keyboard events:
+
+- **Cursor + physical click** — works as a regular mouse.
+- **Two-finger vertical scroll** — natural-scroll convention.
+- **Two-finger horizontal scroll** — emitted as `AC Pan` for hosts that support horizontal wheel.
+- **Three-finger horizontal swipe** — sends `Ctrl+Alt+Left/Right` (GNOME workspace shortcut on Linux). The shortcut is hardcoded for now; a config knob is on the to-do list.
+
+Tap-to-click and macOS-native gesture binding (`Mission Control`, `App Exposé`, `Force Touch`) are out of scope — those would require deskhop to spoof the Apple device descriptor, which conflicts with Linux's hid-magicmouse claiming the keyboard interface. See `docs/DESIGN.md` for the full architectural analysis.
+
+To disable trackpad gesture handling and treat the trackpad as a plain mouse, build with `cmake -B build -DDH_TRACKPAD_PHASE1=OFF`.
+
 ## Hardware
 
 [The circuit](schematics/DeskHop_v1.1.pdf) is based on two Raspberry Pi Pico boards, chosen because they are cheap (4.10 € / pc), can be hand soldered and most suppliers have them in stock.

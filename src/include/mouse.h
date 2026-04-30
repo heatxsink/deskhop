@@ -27,3 +27,7 @@ void process_mouse_report(uint8_t *, int, uint8_t, hid_interface_t *);
 void queue_mouse_report(mouse_report_t *, device_t *);
 bool tud_mouse_report(uint8_t mode, uint8_t buttons, int16_t x, int16_t y, int8_t wheel, int8_t pan);
 void output_mouse_report(mouse_report_t *, device_t *);
+
+enum screen_pos_e update_mouse_position(device_t *, mouse_values_t *);
+mouse_report_t    create_mouse_report(device_t *, mouse_values_t *);
+void              do_screen_switch(device_t *, int direction);

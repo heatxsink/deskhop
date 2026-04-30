@@ -10,9 +10,71 @@
  */
 
 #include "main.h"
+#include "magic_trackpad.h"
 
 _Static_assert(MAX_DEVICES <= CFG_TUH_DEVICE_MAX,
                "MAX_DEVICES must not exceed CFG_TUH_DEVICE_MAX");
+
+#define APPLE_VID          0x05AC
+#define MAGIC_TRACKPAD_PID 0x0265
+
+#ifdef DH_TRACKPAD_PHASE1
+static mt_gesture_state_t mt_state;
+#endif
+
+#ifdef DH_DEBUG_TRACKPAD_LED
+/* Set in tuh_hid_set_report_complete_cb. Currently informational only --
+   could be exposed to user via a status pattern from main loop later. */
+static volatile uint8_t dh_trackpad_activation_state; /* 0=pending, 1=ok, 2=fail */
+#endif
+
+#ifdef DH_TRACKPAD_PHASE1
+/* Switches Magic Trackpad 2 USB out of mouse-emulation mode and into the
+   proprietary multi-touch report format. Layout matches Linux's
+   drivers/hid/hid-magicmouse.c feature_mt_trackpad2_usb.
+
+   Linux's usbhid_set_raw_report sends the buffer including the report ID byte
+   AS the wire payload (count=2, buf={0x02,0x01}). TinyUSB's tuh_hid_set_report
+   only encodes the report ID in wValue -- the buffer is the wire payload as-is.
+   So we have to include the report ID byte ourselves. */
+static uint8_t magic_trackpad_activate[] = { 0x02, 0x01 };
+
+static void send_magic_trackpad_activation(uint8_t dev_addr, uint8_t instance) {
+    bool ok = tuh_hid_set_report(dev_addr, instance, 0x02,
+                                 HID_REPORT_TYPE_FEATURE,
+                                 magic_trackpad_activate,
+                                 sizeof(magic_trackpad_activate));
+    dh_debug_printf("Magic Trackpad activate: dev=%u inst=%u %s\n",
+                    dev_addr, instance, ok ? "queued" : "FAILED");
+}
+
+void tuh_hid_set_report_complete_cb(uint8_t dev_addr, uint8_t instance,
+                                    uint8_t report_id, uint8_t report_type,
+                                    uint16_t len) {
+    dh_debug_printf("set_report complete: dev=%u inst=%u id=%02x type=%u len=%u\n",
+                    dev_addr, instance, report_id, report_type, len);
+
+#ifdef DH_DEBUG_TRACKPAD_LED
+    if (report_type == 3 /* HID_REPORT_TYPE_FEATURE */) {
+        dh_trackpad_activation_state = (len > 0) ? 1 : 2;
+    }
+#endif
+}
+#endif /* DH_TRACKPAD_PHASE1 */
+
+#ifdef DH_DEBUG_TRACKPAD
+static void hex_dump(const char *label, const uint8_t *data, int len) {
+    dh_debug_printf("%s (len=%d):\n", label, len);
+    char line[80];
+    for (int i = 0; i < len; i += 16) {
+        int pos = snprintf(line, sizeof(line), "  %04x:", i);
+        for (int j = 0; j < 16 && i + j < len; j++) {
+            pos += snprintf(line + pos, sizeof(line) - pos, " %02x", data[i + j]);
+        }
+        dh_debug_printf("%s\n", line);
+    }
+}
+#endif
 
 /* ================================================== *
  * ===========  TinyUSB Device Callbacks  =========== *
@@ -153,6 +215,16 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
 
     iface->protocol = tuh_hid_get_protocol(dev_addr, instance);
 
+    /* Cache VID/PID so the report path doesn't have to re-query TinyUSB. */
+    tuh_vid_pid_get(dev_addr, &iface->vendor_id, &iface->product_id);
+
+#ifdef DH_DEBUG_TRACKPAD
+    dh_debug_printf("HID mount: dev_addr=%u instance=%u itf_protocol=%u vid=%04x pid=%04x\n",
+                    dev_addr, instance, itf_protocol,
+                    iface->vendor_id, iface->product_id);
+    hex_dump("HID descriptor", desc_report, desc_len);
+#endif
+
     /* Parse the report descriptor into our internal structure. */
     parse_report_descriptor(iface, desc_report, desc_len);
 
@@ -206,6 +278,18 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
 
     /* Kick off the report querying */
     tuh_hid_receive_report(dev_addr, instance);
+
+#ifdef DH_TRACKPAD_PHASE1
+    /* Magic Trackpad: switch out of mouse-emulation mode so we get full
+       multi-touch frames on Report ID 0x02. We send the activation to the
+       mouse-class instance (Instance 1 in the trackpad's enumeration). */
+    if (iface->vendor_id == APPLE_VID
+        && iface->product_id == MAGIC_TRACKPAD_PID
+        && itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
+        mt_gesture_init(&mt_state);
+        send_magic_trackpad_activation(dev_addr, instance);
+    }
+#endif
 }
 
 /* Invoked when received report from device via interrupt endpoint */
@@ -216,6 +300,154 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
         return;
 
     hid_interface_t *iface = &global_state.iface[dev_addr-1][instance];
+
+#ifdef DH_DEBUG_TRACKPAD_LED
+    /* Visible signal that trackpad reports are reaching this callback.
+       LED flicker = reports flowing; LED dark = nothing arriving on this
+       board. Non-blocking: just an instantaneous GPIO toggle, safe to call
+       from inside the host stack callback. */
+    if (iface->vendor_id == APPLE_VID && iface->product_id == MAGIC_TRACKPAD_PID) {
+        gpio_xor_mask(1u << GPIO_LED_PIN);
+    }
+    (void)dh_trackpad_activation_state;
+#endif
+
+#ifdef DH_TRACKPAD_PHASE1
+    /* Magic Trackpad fast path: if the trackpad is in multi-touch mode the
+       payload here is the proprietary frame format, not the standard mouse
+       layout the descriptor advertises. Decode it ourselves and feed the
+       result through the existing mouse pipeline + (for swipes) the keyboard
+       pipeline. Pre-activation reports (8-byte mouse-emulation) WON'T decode
+       as multi-touch frames; we fall through to the standard mouse pipeline
+       below so the trackpad behaves like a generic mouse until activation
+       lands -- and continues to work even if activation fails for any reason. */
+    if (iface->vendor_id == APPLE_VID && iface->product_id == MAGIC_TRACKPAD_PID) {
+        mt_frame_t frame;
+        bool consumed = false;
+        if (mt_decode_report(report, len, &frame)) {
+            consumed = true;
+
+            /* Trackpad has only one physical button. We translate it to LEFT
+               or RIGHT at click-down based on how many fingers were on the
+               surface at that moment, then keep it sticky for the duration
+               of the held click. Two-finger click-down = right click;
+               one-finger click-down = left click. */
+            static bool prev_phys_click = false;
+            static mt_button_t held_button = MT_BTN_NONE;
+
+            bool phys_click_now = (report[1] & 0x01) != 0;
+            if (phys_click_now && !prev_phys_click) {
+                held_button = (frame.finger_count >= 2) ? MT_BTN_RIGHT : MT_BTN_LEFT;
+            } else if (!phys_click_now && prev_phys_click) {
+                held_button = MT_BTN_NONE;
+            }
+            prev_phys_click = phys_click_now;
+
+            int32_t dx = 0, dy = 0, wheel = 0, pan = 0;
+            mt_swipe_t swipe = MT_SWIPE_NONE;
+            bool moved = mt_gesture_step(&mt_state, &frame, held_button,
+                                         &dx, &dy, &wheel, &pan, &swipe);
+
+            /* What we report to the host: the translated button (which
+               persists for the duration of the held click), not the raw
+               trackpad bit. */
+            uint8_t buttons = (uint8_t)held_button;
+            bool buttons_changed = (buttons != global_state.mouse_buttons);
+
+#ifndef DH_TRACKPAD_PHASE1_SKIP_EMIT
+            /* Throttle emit to ~100 Hz, accumulating motion across frames in
+               between. The trackpad's native report rate (100-250 Hz) appears
+               to trigger a watchdog reboot when output_mouse_report fires on
+               every frame -- root cause unknown, bisected to this call.
+               Throttling sidesteps it. */
+            static int32_t accum_dx = 0, accum_dy = 0, accum_wheel = 0, accum_pan = 0;
+            static uint32_t last_emit_us = 0;
+            const uint32_t EMIT_INTERVAL_US = 10000; /* 100 Hz */
+
+            if (moved) {
+                accum_dx    += dx;
+                accum_dy    += dy;
+                accum_wheel += wheel;
+                accum_pan   += pan;
+            }
+
+            uint32_t now_us = time_us_32();
+            bool have_motion = (accum_dx || accum_dy || accum_wheel || accum_pan);
+            if ((have_motion || buttons_changed) &&
+                (now_us - last_emit_us) >= EMIT_INTERVAL_US) {
+                mouse_values_t values = {
+                    .move_x  = accum_dx,
+                    .move_y  = accum_dy,
+                    .wheel   = accum_wheel,
+                    .pan     = accum_pan,
+                    .buttons = buttons,
+                };
+                enum screen_pos_e dir = update_mouse_position(&global_state, &values);
+                mouse_report_t mr = create_mouse_report(&global_state, &values);
+#ifndef DH_TRACKPAD_PHASE1_NO_OUTPUT_REPORT
+                output_mouse_report(&mr, &global_state);
+#endif
+#ifndef DH_TRACKPAD_PHASE1_NO_SCREEN_SWITCH
+                if (dir != NONE) do_screen_switch(&global_state, dir);
+#endif
+                global_state.mouse_buttons = buttons;
+                accum_dx = accum_dy = accum_wheel = accum_pan = 0;
+                last_emit_us = now_us;
+                (void)mr; (void)dir;
+            }
+#endif
+            (void)moved; (void)buttons; (void)buttons_changed;
+
+#ifndef DH_TRACKPAD_PHASE1_SKIP_EMIT
+            if (swipe != MT_SWIPE_NONE) {
+                /* Workspace / Spaces switching:
+                     GNOME (Linux) default = Ctrl+Alt+Left / Ctrl+Alt+Right
+                     macOS default         = Ctrl+Left / Ctrl+Right
+                   Including Alt as well as Ctrl matches GNOME and is harmless
+                   on macOS (Ctrl+Alt+Left isn't bound by default), so it's a
+                   no-op there rather than firing the wrong action. Once we
+                   have a config knob this should become user-selectable. */
+                uint8_t keycode = (swipe == MT_SWIPE_LEFT)
+                                  ? HID_KEY_ARROW_LEFT
+                                  : HID_KEY_ARROW_RIGHT;
+                hid_keyboard_report_t press = {
+                    .modifier = KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_LEFTALT,
+                    .reserved = 0,
+                    .keycode  = { keycode, 0, 0, 0, 0, 0 },
+                };
+                hid_keyboard_report_t release = { 0 };
+                if (CURRENT_BOARD_IS_ACTIVE_OUTPUT) {
+                    queue_kbd_report(&press, &global_state);
+                    queue_kbd_report(&release, &global_state);
+                } else {
+                    queue_packet((uint8_t *)&press,   KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
+                    queue_packet((uint8_t *)&release, KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
+                }
+            }
+#endif
+            (void)swipe;
+
+#ifdef DH_DEBUG_TRACKPAD
+            /* Per-frame visibility on 3-finger gestures, throttled to 1 in 8
+               so CDC isn't drowned. Useful when tuning the swipe threshold. */
+            static uint8_t three_finger_log_div = 0;
+            if (frame.finger_count == 3 && (++three_finger_log_div & 0x07) == 0) {
+                dh_debug_printf("3F frame: accum_x=%ld emitted=%d\n",
+                                (long)mt_state.swipe_accum_x,
+                                mt_state.swipe_emitted ? 1 : 0);
+            }
+#endif
+        }
+        if (consumed) {
+            tuh_hid_receive_report(dev_addr, instance);
+            return;
+        }
+        /* Decode failed -- trackpad is in mouse-emulation mode (activation
+           hasn't landed yet, or failed entirely). Fall through to the
+           standard mouse pipeline so the user gets at least basic cursor
+           movement. */
+    }
+#endif /* DH_TRACKPAD_PHASE1 */
 
     /* Calculate a device index that distinguishes between different devices
        while staying within the bounds of MAX_DEVICES.
