@@ -323,7 +323,10 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                 }
 
                 if (swipe != MT_SWIPE_NONE) {
-                    /* macOS Spaces switching: Ctrl+Left / Ctrl+Right. */
+                    /* macOS Spaces switching: Ctrl+Left / Ctrl+Right. Has to
+                       route the same way mouse reports do -- if this board is
+                       the active output, queue locally; otherwise UART it
+                       across to the board that owns the active host. */
                     uint8_t keycode = (swipe == MT_SWIPE_LEFT)
                                       ? HID_KEY_ARROW_LEFT
                                       : HID_KEY_ARROW_RIGHT;
@@ -333,11 +336,17 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                         .keycode  = { keycode, 0, 0, 0, 0, 0 },
                     };
                     hid_keyboard_report_t release = { 0 };
-                    queue_kbd_report(&press, &global_state);
-                    queue_kbd_report(&release, &global_state);
-                    dh_debug_printf("3-finger swipe %s -> Ctrl+%s\n",
+                    if (CURRENT_BOARD_IS_ACTIVE_OUTPUT) {
+                        queue_kbd_report(&press, &global_state);
+                        queue_kbd_report(&release, &global_state);
+                    } else {
+                        queue_packet((uint8_t *)&press,   KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
+                        queue_packet((uint8_t *)&release, KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
+                    }
+                    dh_debug_printf("3-finger swipe %s -> Ctrl+%s (route=%s)\n",
                                     swipe == MT_SWIPE_LEFT ? "LEFT" : "RIGHT",
-                                    swipe == MT_SWIPE_LEFT ? "Left" : "Right");
+                                    swipe == MT_SWIPE_LEFT ? "Left" : "Right",
+                                    CURRENT_BOARD_IS_ACTIVE_OUTPUT ? "local" : "uart");
                 }
 
                 /* Periodic visibility on 3-finger frames so we can tell whether
