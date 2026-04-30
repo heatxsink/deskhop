@@ -11,6 +11,9 @@
 
 #include "main.h"
 #include "magic_trackpad.h"
+#ifdef DH_TRACKPAD_TAP_TO_CLICK
+#include "magic_trackpad_tap.h"
+#endif
 
 _Static_assert(MAX_DEVICES <= CFG_TUH_DEVICE_MAX,
                "MAX_DEVICES must not exceed CFG_TUH_DEVICE_MAX");
@@ -345,8 +348,35 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
 
             int32_t dx = 0, dy = 0, wheel = 0, pan = 0;
             mt_swipe_t swipe = MT_SWIPE_NONE;
+            uint32_t step_now_us = time_us_32();
             bool moved = mt_gesture_step(&mt_state, &frame, held_button,
+                                         step_now_us,
                                          &dx, &dy, &wheel, &pan, &swipe);
+
+#ifdef DH_TRACKPAD_TAP_TO_CLICK
+            /* Drain tap state-machine outputs. Each pending entry is one
+               button transition; emit a fresh mouse report for it. Bypasses
+               the throttle below since taps are infrequent and need
+               immediate emission. */
+            tp_tap_t *tap_ptr = (tp_tap_t *)mt_state.tap;
+            if (tap_ptr) {
+                for (int p = 0; p < tap_ptr->pending_count; p++) {
+                    tp_tap_button_event_t ev = tap_ptr->pending[p];
+                    /* If pressed: set the button bit. If released: clear. */
+                    uint8_t b = (uint8_t)global_state.mouse_buttons;
+                    if (ev.pressed) b |= (uint8_t)ev.button;
+                    else            b &= (uint8_t)~ev.button;
+                    mouse_values_t tv = {
+                        .move_x = 0, .move_y = 0, .wheel = 0, .pan = 0,
+                        .buttons = b,
+                    };
+                    mouse_report_t tmr = create_mouse_report(&global_state, &tv);
+                    output_mouse_report(&tmr, &global_state);
+                    global_state.mouse_buttons = b;
+                }
+                tap_ptr->pending_count = 0;
+            }
+#endif
 
             /* What we report to the host: the translated button (which
                persists for the duration of the held click), not the raw

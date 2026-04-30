@@ -71,6 +71,14 @@ typedef struct {
        motion is preserved across slow drags (window-resize feel). */
     int32_t  pointer_rem_x;
     int32_t  pointer_rem_y;
+
+    /* Tap state -- only present when DH_TRACKPAD_TAP_TO_CLICK is on.
+       Forward-declared via void* to keep this header agnostic of the
+       libinput-port internals. magic_trackpad.c casts it back. */
+    void    *tap;
+
+    /* Track button state across frames for BUTTON event generation. */
+    uint8_t  prev_button_held;
 } mt_gesture_state_t;
 
 void mt_gesture_init(mt_gesture_state_t *s);
@@ -87,6 +95,7 @@ void mt_gesture_init(mt_gesture_state_t *s);
      2 fingers + MT_BTN_RIGHT -> no motion (right-click held; cursor stays put) */
 bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
                      mt_button_t button_held,
+                     uint32_t now_us,
                      int32_t *out_move_x, int32_t *out_move_y,
                      int32_t *out_wheel, int32_t *out_pan,
                      mt_swipe_t *out_swipe);

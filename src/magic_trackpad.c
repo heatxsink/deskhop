@@ -8,6 +8,14 @@
 #include "magic_trackpad.h"
 #include <string.h>
 
+#ifdef DH_TRACKPAD_TAP_TO_CLICK
+#include "magic_trackpad_tap.h"
+/* One static tap state for the (single) trackpad. mt_gesture_state_t
+   carries a void* pointing here so the header doesn't need to know about
+   the libinput-port internals when the flag is off. */
+static tp_tap_t mt_tap_state;
+#endif
+
 #define MT_REPORT_ID  0x02
 
 /* Sign-extend an n-bit integer (n <= 32). */
@@ -60,6 +68,10 @@ bool mt_decode_report(const uint8_t *report, int len, mt_frame_t *out) {
 
 void mt_gesture_init(mt_gesture_state_t *s) {
     memset(s, 0, sizeof(*s));
+#ifdef DH_TRACKPAD_TAP_TO_CLICK
+    tp_tap_init(&mt_tap_state);
+    s->tap = &mt_tap_state;
+#endif
 }
 
 /* Find a finger in the previous frame by id. Returns its index, or -1. */
@@ -84,6 +96,7 @@ static int find_prev(mt_gesture_state_t *s, uint8_t id) {
 
 bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
                      mt_button_t button_held,
+                     uint32_t now_us,
                      int32_t *out_move_x, int32_t *out_move_y,
                      int32_t *out_wheel, int32_t *out_pan,
                      mt_swipe_t *out_swipe) {
@@ -94,6 +107,77 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
     *out_swipe  = MT_SWIPE_NONE;
 
     bool emit = false;
+
+#ifdef DH_TRACKPAD_TAP_TO_CLICK
+    tp_tap_t *tap = (tp_tap_t *)s->tap;
+    if (tap) {
+        /* TIMER: synthesize a TIMEOUT event if the deadline has passed.
+           Timer arming uses absolute time (now_us + period). Use signed
+           subtraction for wraparound-safe comparison. */
+        if (tap->timer_us != 0 && (int32_t)(now_us - tap->timer_us) >= 0) {
+            tap->timer_us = 0;
+            tp_tap_handle_event(tap, 0, TAP_EVENT_TIMEOUT, now_us);
+        }
+
+        /* TOUCH events for fingers present this frame but not in prev_id.
+           Use Apple's finger_id (low 4 bits) as the touch slot, modulo
+           MT_MAX_FINGERS to keep within array bounds. */
+        for (int i = 0; i < frame->finger_count && i < MT_MAX_FINGERS; i++) {
+            uint8_t id = frame->fingers[i].finger_id;
+            uint8_t slot = id % MT_MAX_FINGERS;
+            bool was_present = false;
+            for (int j = 0; j < s->prev_count; j++) {
+                if (s->prev_id[j] == id) { was_present = true; break; }
+            }
+            if (!was_present) {
+                tap->touches[slot].state     = TAP_TOUCH_STATE_TOUCH;
+                tap->touches[slot].initial_x = frame->fingers[i].x;
+                tap->touches[slot].initial_y = frame->fingers[i].y;
+                tap->touches[slot].is_thumb  = false;
+                tap->touches[slot].is_palm   = false;
+                if (tap->nfingers_down < MT_MAX_FINGERS) tap->nfingers_down++;
+                tp_tap_handle_event(tap, slot, TAP_EVENT_TOUCH, now_us);
+            } else if (tap->touches[slot].state != TAP_TOUCH_STATE_DEAD) {
+                /* Existing finger -- check motion past threshold. */
+                int32_t dx = frame->fingers[i].x - tap->touches[slot].initial_x;
+                int32_t dy = frame->fingers[i].y - tap->touches[slot].initial_y;
+                int32_t dist_sq = dx * dx + dy * dy;
+                if (dist_sq > DEFAULT_TAP_MOVE_THRESHOLD_SQ) {
+                    tp_tap_handle_event(tap, slot, TAP_EVENT_MOTION, now_us);
+                }
+            }
+        }
+
+        /* RELEASE events for fingers in prev_id but not in this frame. */
+        for (int j = 0; j < s->prev_count; j++) {
+            uint8_t id = s->prev_id[j];
+            bool still_present = false;
+            for (int i = 0; i < frame->finger_count && i < MT_MAX_FINGERS; i++) {
+                if (frame->fingers[i].finger_id == id) { still_present = true; break; }
+            }
+            if (!still_present) {
+                uint8_t slot = id % MT_MAX_FINGERS;
+                if (tap->nfingers_down) tap->nfingers_down--;
+                tp_tap_handle_event(tap, slot, TAP_EVENT_RELEASE, now_us);
+                tap->touches[slot].state = TAP_TOUCH_STATE_IDLE;
+            }
+        }
+
+        /* BUTTON events on physical click rising/falling edge. */
+        if (button_held != s->prev_button_held) {
+            bool pressed = (button_held != MT_BTN_NONE);
+            tp_tap_handle_event(tap, 0, TAP_EVENT_BUTTON, now_us);
+            (void)pressed;  /* state machine looks at its own flag, libinput
+                               separates BUTTON event from press direction;
+                               our state machine treats BUTTON as "physical
+                               click occurred, abandon the tap" which is
+                               direction-agnostic */
+        }
+        s->prev_button_held = (uint8_t)button_held;
+    }
+#else
+    (void)now_us;  /* unused when tap-to-click disabled */
+#endif
 
     /* No fingers: just clear state, no signal. */
     if (frame->finger_count == 0) {
