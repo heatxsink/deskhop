@@ -64,6 +64,13 @@ typedef struct {
        threshold. */
     int32_t  swipe_accum_x;
     bool     swipe_emitted;
+
+    /* Pointer-divide remainder. Slow finger motions produce per-frame
+       deltas smaller than POINTER_DIV; integer truncation would throw
+       them away. Carry the leftover into the next frame so cursor
+       motion is preserved across slow drags (window-resize feel). */
+    int32_t  pointer_rem_x;
+    int32_t  pointer_rem_y;
 } mt_gesture_state_t;
 
 void mt_gesture_init(mt_gesture_state_t *s);

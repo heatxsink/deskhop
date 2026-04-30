@@ -106,20 +106,27 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
 
     /* If finger count changed since last frame, skip the delta this frame
        to avoid jumps. Update tracking and bail. Always reset 3-finger swipe
-       state on a transition -- a fresh 3-finger gesture should arm cleanly. */
+       and pointer-remainder state on a transition -- a fresh gesture should
+       arm cleanly without carrying leftover sub-pixel motion across modes. */
     if (!s->have_prev || frame->finger_count != s->prev_count) {
         s->swipe_accum_x = 0;
         s->swipe_emitted = false;
+        s->pointer_rem_x = 0;
+        s->pointer_rem_y = 0;
         goto save_and_return;
     }
 
     if (frame->finger_count == 1) {
         int prev_idx = find_prev(s, frame->fingers[0].finger_id);
         if (prev_idx >= 0) {
-            int32_t dx = frame->fingers[0].x - s->prev_x[prev_idx];
-            int32_t dy = frame->fingers[0].y - s->prev_y[prev_idx];
+            /* Add carried remainder before dividing so slow movements don't
+               truncate to zero forever. Save the new remainder for next frame. */
+            int32_t dx = (frame->fingers[0].x - s->prev_x[prev_idx]) + s->pointer_rem_x;
+            int32_t dy = (frame->fingers[0].y - s->prev_y[prev_idx]) + s->pointer_rem_y;
             *out_move_x = dx / POINTER_DIV;
             *out_move_y = dy / POINTER_DIV;
+            s->pointer_rem_x = dx - (*out_move_x) * POINTER_DIV;
+            s->pointer_rem_y = dy - (*out_move_y) * POINTER_DIV;
             emit = (*out_move_x != 0 || *out_move_y != 0);
         }
     } else if (frame->finger_count == 2) {
@@ -128,10 +135,12 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
                anchoring the click; user adds a second finger to drag. */
             int prev_idx = find_prev(s, frame->fingers[1].finger_id);
             if (prev_idx >= 0) {
-                int32_t dx = frame->fingers[1].x - s->prev_x[prev_idx];
-                int32_t dy = frame->fingers[1].y - s->prev_y[prev_idx];
+                int32_t dx = (frame->fingers[1].x - s->prev_x[prev_idx]) + s->pointer_rem_x;
+                int32_t dy = (frame->fingers[1].y - s->prev_y[prev_idx]) + s->pointer_rem_y;
                 *out_move_x = dx / POINTER_DIV;
                 *out_move_y = dy / POINTER_DIV;
+                s->pointer_rem_x = dx - (*out_move_x) * POINTER_DIV;
+                s->pointer_rem_y = dy - (*out_move_y) * POINTER_DIV;
                 emit = (*out_move_x != 0 || *out_move_y != 0);
             }
         } else if (button_held == MT_BTN_RIGHT) {
