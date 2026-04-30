@@ -298,19 +298,26 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
             mt_frame_t frame;
             if (mt_decode_report(report, len, &frame)) {
                 int32_t dx = 0, dy = 0, wheel = 0, pan = 0;
-                bool emit = mt_gesture_step(&mt_state, &frame, &dx, &dy, &wheel, &pan);
-                if (emit) {
+                bool moved = mt_gesture_step(&mt_state, &frame, &dx, &dy, &wheel, &pan);
+
+                /* Linux's hid-magicmouse reads data[1] as the click bitmap for
+                   trackpad2 (BTN_MOUSE = data[1] & 1). We mirror that. */
+                uint8_t buttons = report[1] & 0x07;
+                bool buttons_changed = (buttons != global_state.mouse_buttons);
+
+                if (moved || buttons_changed) {
                     mouse_values_t values = {
                         .move_x  = dx,
                         .move_y  = dy,
                         .wheel   = wheel,
                         .pan     = pan,
-                        .buttons = global_state.mouse_buttons,
+                        .buttons = buttons,
                     };
                     enum screen_pos_e dir = update_mouse_position(&global_state, &values);
                     mouse_report_t mr = create_mouse_report(&global_state, &values);
                     output_mouse_report(&mr, &global_state);
                     if (dir != NONE) do_screen_switch(&global_state, dir);
+                    global_state.mouse_buttons = buttons;
                 }
             }
             tuh_hid_receive_report(dev_addr, instance);

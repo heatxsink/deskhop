@@ -105,10 +105,7 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
             int32_t dx = frame->fingers[0].x - s->prev_x[prev_idx];
             int32_t dy = frame->fingers[0].y - s->prev_y[prev_idx];
             *out_move_x = dx / POINTER_DIV;
-            /* Trackpad Y already negated by decoder so increasing Y means moving
-               up the trackpad. For mouse movement we want screen-down to be +y,
-               which on macOS/Linux maps inversely to physical finger motion. */
-            *out_move_y = -dy / POINTER_DIV;
+            *out_move_y = dy / POINTER_DIV;
             emit = (*out_move_x != 0 || *out_move_y != 0);
         }
     } else if (frame->finger_count >= 2) {
