@@ -44,6 +44,26 @@ void tuh_hid_set_report_complete_cb(uint8_t dev_addr, uint8_t instance,
                                     uint16_t len) {
     dh_debug_printf("set_report complete: dev=%u inst=%u id=%02x type=%u len=%u\n",
                     dev_addr, instance, report_id, report_type, len);
+
+#ifdef DH_DEBUG_TRACKPAD_LED
+    /* Activation outcome via blink count (only fires for the trackpad
+       activation -- nothing else in the codebase issues set_report from the
+       host stack today). Long-on for 1s = success, 3 short flashes = failed. */
+    if (report_type == 3 /* HID_REPORT_TYPE_FEATURE */) {
+        if (len > 0) {
+            gpio_put(GPIO_LED_PIN, 1);
+            sleep_ms(1000);
+            gpio_put(GPIO_LED_PIN, 0);
+        } else {
+            for (int i = 0; i < 3; i++) {
+                gpio_put(GPIO_LED_PIN, 1);
+                sleep_ms(150);
+                gpio_put(GPIO_LED_PIN, 0);
+                sleep_ms(150);
+            }
+        }
+    }
+#endif
 }
 
 #ifdef DH_DEBUG_TRACKPAD
@@ -271,6 +291,17 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
         && itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
         mt_gesture_init(&mt_state);
         send_magic_trackpad_activation(dev_addr, instance);
+
+#ifdef DH_DEBUG_TRACKPAD_LED
+        /* 6 fast blinks at trackpad-mouse-instance mount: confirms enumeration
+           reached this code path and we're about to issue activation. */
+        for (int i = 0; i < 6; i++) {
+            gpio_put(GPIO_LED_PIN, 1);
+            sleep_ms(80);
+            gpio_put(GPIO_LED_PIN, 0);
+            sleep_ms(80);
+        }
+#endif
     }
 }
 
@@ -282,6 +313,15 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
         return;
 
     hid_interface_t *iface = &global_state.iface[dev_addr-1][instance];
+
+#ifdef DH_DEBUG_TRACKPAD_LED
+    /* Visible signal that trackpad reports are reaching this callback.
+       LED flicker = reports flowing; LED dark = nothing arriving on this
+       board. Useful when CDC isn't available (production builds). */
+    if (iface->vendor_id == APPLE_VID && iface->product_id == MAGIC_TRACKPAD_PID) {
+        gpio_xor_mask(1u << GPIO_LED_PIN);
+    }
+#endif
 
     /* Magic Trackpad fast path: if the trackpad is in multi-touch mode the
        payload here is the proprietary frame format, not the standard mouse

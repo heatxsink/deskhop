@@ -9,6 +9,7 @@ set(VERSION_MINOR 77)
 option(DH_DEBUG "Build a debug version" OFF)
 option(DH_DEBUG_CDC_FLASH "Enable CDC command to trigger bootloader mode" OFF)
 option(DH_DEBUG_TRACKPAD "Log HID descriptors and Apple HID reports for trackpad work (requires DH_DEBUG)" OFF)
+option(DH_DEBUG_TRACKPAD_LED "Toggle the onboard LED on every Magic Trackpad report received (no CDC needed)" OFF)
 
 ## Hardware Configuration
 set(DP_PIN_DEFAULT 14 CACHE STRING "Default USB D+ Pin Number")
@@ -133,6 +134,10 @@ if (DH_DEBUG_TRACKPAD)
     message(FATAL_ERROR "DH_DEBUG_TRACKPAD requires DH_DEBUG (CDC log sink). Re-run cmake with -DDH_DEBUG=ON.")
   endif()
   add_definitions(-DDH_DEBUG_TRACKPAD)
+endif()
+
+if (DH_DEBUG_TRACKPAD_LED)
+  add_definitions(-DDH_DEBUG_TRACKPAD_LED)
 endif()
   
 target_include_directories(${binary} PUBLIC ${COMMON_INCLUDES})
