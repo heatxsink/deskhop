@@ -36,6 +36,7 @@ enum packet_type_e {
     PROXY_PACKET_MSG     = 23,
     REQUEST_BYTE_MSG     = 24,
     RESPONSE_BYTE_MSG    = 25,
+    TRACKPAD_MODE_MSG    = 26,  // 1-byte payload: 1 = enter trackpad mode (spoof Apple), 0 = exit
 };
 
 typedef enum {

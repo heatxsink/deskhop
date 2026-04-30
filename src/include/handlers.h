@@ -59,6 +59,7 @@ void handle_screensaver_msg(uart_packet_t *, device_t *);
 void handle_set_report_msg(uart_packet_t *, device_t *);
 void handle_switch_lock_msg(uart_packet_t *, device_t *);
 void handle_sync_borders_msg(uart_packet_t *, device_t *);
+void handle_trackpad_mode_msg(uart_packet_t *, device_t *);
 void handle_wipe_config_msg(uart_packet_t *, device_t *);
 void handle_write_fw_msg(uart_packet_t *, device_t *);
 

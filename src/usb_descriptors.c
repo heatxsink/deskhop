@@ -23,13 +23,19 @@ tusb_desc_device_t const desc_device_config = DEVICE_DESCRIPTOR(0x2e8a, 0x107c);
                                         // https://pid.codes/1209/C000/
 tusb_desc_device_t const desc_device = DEVICE_DESCRIPTOR(0x1209, 0xc000);
 
+/* Apple Magic Trackpad 2 USB. When trackpad mode is active, deskhop spoofs
+   this VID/PID so Linux's hid-magicmouse driver (and macOS's native trackpad
+   driver) bind to the device and handle gestures natively. */
+tusb_desc_device_t const desc_device_trackpad = DEVICE_DESCRIPTOR(0x05AC, 0x0265);
+
 // Invoked when received GET DEVICE DESCRIPTOR
 // Application return pointer to descriptor
 uint8_t const *tud_descriptor_device_cb(void) {
     if (global_state.config_mode_active)
         return (uint8_t const *)&desc_device_config;
-    else
-        return (uint8_t const *)&desc_device;
+    if (global_state.trackpad_mode_active)
+        return (uint8_t const *)&desc_device_trackpad;
+    return (uint8_t const *)&desc_device;
 }
 
 //--------------------------------------------------------------------+
@@ -48,14 +54,34 @@ uint8_t const desc_hid_report_relmouse[] = {TUD_HID_REPORT_DESC_MOUSEHELP(HID_RE
 
 uint8_t const desc_hid_report_vendor[] = {TUD_HID_REPORT_DESC_VENDOR_CTRL(HID_REPORT_ID(REPORT_ID_VENDOR))};
 
+/* Magic Trackpad 2 USB Instance 1 HID report descriptor (110 bytes), captured
+   verbatim from a real device -- see docs/captures/trackpad-mount-and-baseline.txt.
+   Includes the standard mouse collection (Report ID 0x02, where multi-touch
+   frames flow once activated) plus the touchpad sub-collection (Report ID 0x3F
+   input, 16 B) and the vendor calibration blob (Report ID 0x44 feature, 1387 B).
+   We mirror the descriptor as-is so Linux's hid-magicmouse binds cleanly; we
+   only have to forward Report ID 0x02 traffic for actual functionality. */
+uint8_t const desc_hid_report_trackpad[] = {
+    0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x09, 0x01, 0xa1, 0x00, 0x05, 0x09, 0x19, 0x01, 0x29, 0x03,
+    0x15, 0x00, 0x25, 0x01, 0x85, 0x02, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02, 0x95, 0x01, 0x75, 0x05,
+    0x81, 0x01, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15, 0x81, 0x25, 0x7f, 0x75, 0x08, 0x95, 0x02,
+    0x81, 0x06, 0x95, 0x04, 0x75, 0x08, 0x81, 0x01, 0xc0, 0xc0, 0x05, 0x0d, 0x09, 0x05, 0xa1, 0x01,
+    0x06, 0x00, 0xff, 0x09, 0x0c, 0x15, 0x00, 0x26, 0xff, 0x00, 0x75, 0x08, 0x95, 0x10, 0x85, 0x3f,
+    0x81, 0x22, 0xc0, 0x06, 0x00, 0xff, 0x09, 0x0c, 0xa1, 0x01, 0x06, 0x00, 0xff, 0x09, 0x0c, 0x15,
+    0x00, 0x26, 0xff, 0x00, 0x85, 0x44, 0x75, 0x08, 0x96, 0x6b, 0x05, 0x81, 0x00, 0xc0,
+};
+
 
 // Invoked when received GET HID REPORT DESCRIPTOR
 // Application return pointer to descriptor
 // Descriptor contents must exist long enough for transfer to complete
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
-    if (global_state.config_mode_active)
-        if (instance == ITF_NUM_HID_VENDOR)
-            return desc_hid_report_vendor;
+    /* Mode priority: config > trackpad > default. Slot 2 (ITF_NUM_HID_VENDOR
+       and ITF_NUM_HID_TRACKPAD share the same number) routes by mode. */
+    if (global_state.config_mode_active && instance == ITF_NUM_HID_VENDOR)
+        return desc_hid_report_vendor;
+    if (global_state.trackpad_mode_active && instance == ITF_NUM_HID_TRACKPAD)
+        return desc_hid_report_trackpad;
 
     switch(instance) {
         case ITF_NUM_HID:
@@ -161,9 +187,10 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
 // Configuration Descriptor
 //--------------------------------------------------------------------+
 
-#define EPNUM_HID        0x81
-#define EPNUM_HID_REL_M  0x82
-#define EPNUM_HID_VENDOR 0x83
+#define EPNUM_HID          0x81
+#define EPNUM_HID_REL_M    0x82
+#define EPNUM_HID_VENDOR   0x83  /* Config mode, mutually exclusive with TRACKPAD */
+#define EPNUM_HID_TRACKPAD 0x83  /* Trackpad mode, same EP slot since modes are exclusive */
 
 #define EPNUM_MSC_OUT    0x04
 #define EPNUM_MSC_IN     0x84
@@ -171,16 +198,20 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
 #ifndef DH_DEBUG
 
 #define ITF_NUM_TOTAL 2
+#define ITF_NUM_TOTAL_TRACKPAD 3
 #define ITF_NUM_TOTAL_CONFIG 4
 #define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN)
+#define CONFIG_TOTAL_LEN_TRACKPAD (TUD_CONFIG_DESC_LEN + 3 * TUD_HID_DESC_LEN)
 #define CONFIG_TOTAL_LEN_CFG (TUD_CONFIG_DESC_LEN + 3 * TUD_HID_DESC_LEN + TUD_MSC_DESC_LEN)
 
 #else
 #define ITF_NUM_CDC 4
 #define ITF_NUM_TOTAL 3
+#define ITF_NUM_TOTAL_TRACKPAD 4
 #define ITF_NUM_TOTAL_CONFIG 5
 
 #define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN + TUD_CDC_DESC_LEN)
+#define CONFIG_TOTAL_LEN_TRACKPAD (TUD_CONFIG_DESC_LEN + 3 * TUD_HID_DESC_LEN + TUD_CDC_DESC_LEN)
 #define CONFIG_TOTAL_LEN_CFG (TUD_CONFIG_DESC_LEN + 3 * TUD_HID_DESC_LEN + TUD_MSC_DESC_LEN + TUD_CDC_DESC_LEN)
 
 #define EPNUM_CDC_NOTIF  0x85
@@ -258,11 +289,48 @@ uint8_t const desc_configuration_config[] = {
 #endif
 };
 
+uint8_t const desc_configuration_trackpad[] = {
+    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL_TRACKPAD, 0, CONFIG_TOTAL_LEN_TRACKPAD,
+                          TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 500),
+
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID,
+                       STRID_PRODUCT,
+                       HID_ITF_PROTOCOL_NONE,
+                       sizeof(desc_hid_report),
+                       EPNUM_HID,
+                       CFG_TUD_HID_EP_BUFSIZE,
+                       1),
+
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_REL_M,
+                       STRID_MOUSE,
+                       HID_ITF_PROTOCOL_NONE,
+                       sizeof(desc_hid_report_relmouse),
+                       EPNUM_HID_REL_M,
+                       CFG_TUD_HID_EP_BUFSIZE,
+                       1),
+
+    /* Spoofed Apple Magic Trackpad 2 USB Instance 1 -- 110-byte descriptor.
+       1ms polling matches the real device. CFG_TUD_HID_EP_BUFSIZE (32) is
+       larger than the biggest IN report we forward (39 B for 3-finger MT). */
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_TRACKPAD,
+                       STRID_PRODUCT,
+                       HID_ITF_PROTOCOL_NONE,
+                       sizeof(desc_hid_report_trackpad),
+                       EPNUM_HID_TRACKPAD,
+                       CFG_TUD_HID_EP_BUFSIZE,
+                       1),
+#ifdef DH_DEBUG
+    TUD_CDC_DESCRIPTOR(
+        ITF_NUM_CDC, STRID_DEBUG, EPNUM_CDC_NOTIF, 8, EPNUM_CDC_OUT, EPNUM_CDC_IN, CFG_TUD_CDC_EP_BUFSIZE),
+#endif
+};
+
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
     (void)index; // for multiple configurations
 
     if (global_state.config_mode_active)
         return desc_configuration_config;
-    else
-        return desc_configuration;
+    if (global_state.trackpad_mode_active)
+        return desc_configuration_trackpad;
+    return desc_configuration;
 }
