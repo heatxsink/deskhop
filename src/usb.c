@@ -28,6 +28,7 @@ static mt_gesture_state_t mt_state;
 static volatile uint8_t dh_trackpad_activation_state; /* 0=pending, 1=ok, 2=fail */
 #endif
 
+#ifdef DH_TRACKPAD_PHASE1
 /* Switches Magic Trackpad 2 USB out of mouse-emulation mode and into the
    proprietary multi-touch report format. Layout matches Linux's
    drivers/hid/hid-magicmouse.c feature_mt_trackpad2_usb.
@@ -59,6 +60,7 @@ void tuh_hid_set_report_complete_cb(uint8_t dev_addr, uint8_t instance,
     }
 #endif
 }
+#endif /* DH_TRACKPAD_PHASE1 */
 
 #ifdef DH_DEBUG_TRACKPAD
 static void hex_dump(const char *label, const uint8_t *data, int len) {
@@ -187,13 +189,6 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
 
     hid_interface_t *iface = &global_state.iface[dev_addr-1][instance];
 
-    /* Magic Trackpad unplugged: drop trackpad mode and notify the device-side
-       board so it re-enumerates back to the default deskhop descriptor.
-       Read VID/PID from the cached fields BEFORE we memset() the interface
-       struct below. */
-    bool was_trackpad = (iface->vendor_id == APPLE_VID
-                         && iface->product_id == MAGIC_TRACKPAD_PID);
-
     switch (itf_protocol) {
         case HID_ITF_PROTOCOL_KEYBOARD:
             global_state.keyboard_connected = false;
@@ -207,12 +202,6 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
     /* Also clear the interface structure, otherwise plugging something else later
        might be a fun (and confusing) experience */
     memset(iface, 0, sizeof(hid_interface_t));
-
-    if (was_trackpad && global_state.trackpad_mode_active) {
-        global_state.trackpad_mode_active = false;
-        global_state.trackpad_reconnect_pending = true;
-        send_value(DISABLE, TRACKPAD_MODE_MSG);
-    }
 }
 
 void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_report, uint16_t desc_len) {
@@ -290,33 +279,17 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
     /* Kick off the report querying */
     tuh_hid_receive_report(dev_addr, instance);
 
-    /* Magic Trackpad: switch out of mouse-emulation mode so we get full
-       multi-touch frames on Report ID 0x02. Activation goes to the
-       mouse-class instance (Instance 1 in the trackpad's enumeration).
-
-       Also notify the device-side board that an Apple Magic Trackpad has
-       arrived so it can swap to the spoofed Apple descriptor. The TRACKPAD
-       MODE message is sent unconditionally on every Apple-trackpad mount;
-       handle_trackpad_mode_msg is idempotent so duplicate sends from the
-       multiple HID instances of the trackpad are safe. */
-    if (iface->vendor_id == APPLE_VID && iface->product_id == MAGIC_TRACKPAD_PID) {
-        if (itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
 #ifdef DH_TRACKPAD_PHASE1
-            mt_gesture_init(&mt_state);
-#endif
-            send_magic_trackpad_activation(dev_addr, instance);
-        }
-
-        /* Set local flag and signal device-side board.  Both boards run the
-           same firmware, so on the device-side board this same code path
-           sets the local flag too -- no harm.  When the device-side board
-           is physically the receiver of TRACKPAD_MODE_MSG, the handler
-           will set trackpad_reconnect_pending which triggers the USB
-           re-enumeration on core0. */
-        global_state.trackpad_mode_active = true;
-        global_state.trackpad_reconnect_pending = true;
-        send_value(ENABLE, TRACKPAD_MODE_MSG);
+    /* Magic Trackpad: switch out of mouse-emulation mode so we get full
+       multi-touch frames on Report ID 0x02. We send the activation to the
+       mouse-class instance (Instance 1 in the trackpad's enumeration). */
+    if (iface->vendor_id == APPLE_VID
+        && iface->product_id == MAGIC_TRACKPAD_PID
+        && itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
+        mt_gesture_init(&mt_state);
+        send_magic_trackpad_activation(dev_addr, instance);
     }
+#endif
 }
 
 /* Invoked when received report from device via interrupt endpoint */

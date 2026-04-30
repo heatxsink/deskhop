@@ -48,25 +48,6 @@ void usb_device_task(device_t *state) {
     tud_task();
 }
 
-/* When trackpad mode toggles (handle_trackpad_mode_msg sets the pending flag
-   from the UART RX handler on core1), this task picks it up on core0 and
-   cycles the device-side USB connection so the host PC re-enumerates and
-   sees the new descriptor (Apple VID/PID + trackpad HID interface, or back
-   to the default deskhop descriptor).
-
-   tud_disconnect / tud_connect MUST be called from the same core that runs
-   tud_task (core0). The 100 ms blocking sleep between is acceptable because
-   this task only fires on a rare event (trackpad plug/unplug). */
-void trackpad_reconnect_task(device_t *state) {
-    if (!state->trackpad_reconnect_pending)
-        return;
-
-    tud_disconnect();
-    sleep_ms(100);
-    tud_connect();
-    state->trackpad_reconnect_pending = false;
-}
-
 void usb_host_task(device_t *state) {
     if (tuh_inited())
         tuh_task();

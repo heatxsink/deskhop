@@ -89,7 +89,6 @@ const uart_handler_t uart_handler[] = {
 
     {.type = HEARTBEAT_MSG, .handler = handle_heartbeat_msg},
     {.type = PROXY_PACKET_MSG, .handler = handle_proxy_msg},
-    {.type = TRACKPAD_MODE_MSG, .handler = handle_trackpad_mode_msg},
 };
 
 void process_packet(uart_packet_t *packet, device_t *state) {

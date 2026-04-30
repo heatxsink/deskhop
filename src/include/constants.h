@@ -22,11 +22,10 @@
  *  HID Interface Numbers
  *==============================================================================*/
 
-#define ITF_NUM_HID          0
-#define ITF_NUM_HID_REL_M    1
-#define ITF_NUM_HID_VENDOR   2  /* Config mode only -- mutually exclusive with TRACKPAD */
-#define ITF_NUM_HID_TRACKPAD 2  /* Trackpad mode only -- Apple Magic Trackpad spoof */
-#define ITF_NUM_MSC          3
+#define ITF_NUM_HID        0
+#define ITF_NUM_HID_REL_M  1
+#define ITF_NUM_HID_VENDOR 2
+#define ITF_NUM_MSC        3
 
 /*==============================================================================
  *  Mouse Modes

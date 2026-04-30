@@ -144,8 +144,6 @@ typedef struct {
     bool gaming_mode;        // True when gaming mode is on (relative passthru + lock)
     bool config_mode_active; // True when config mode is active
     bool digitizer_active;   // True when digitizer Win/Mac workaround is active
-    bool trackpad_mode_active; // True when an Apple Magic Trackpad is connected and we're spoofing the device descriptor for native OS gesture binding
-    bool trackpad_reconnect_pending; // Set from UART RX (core1) when trackpad mode toggles -- core0 task picks it up to do the tud_disconnect/connect cycle on the next iteration
 
     /* Onboard LED blinky (provide feedback when e.g. mouse connected) */
     int32_t blinks_left;     // How many blink transitions are left

@@ -265,20 +265,6 @@ void handle_reboot_msg(uart_packet_t *packet, device_t *state) {
     reboot();
 }
 
-/* Source-side board notifies us that an Apple Magic Trackpad was plugged in
-   (or unplugged) on its host port. We update the mode flag and queue a
-   USB device-side reconnect so the host PC re-enumerates with the spoofed
-   Apple descriptor (or back to the default deskhop descriptor on unplug).
-   Reconnect is deferred to a core0 task to avoid touching tud_* from core1. */
-void handle_trackpad_mode_msg(uart_packet_t *packet, device_t *state) {
-    bool want_active = (packet->data[0] != 0);
-    if (state->trackpad_mode_active == want_active)
-        return;  /* idempotent */
-
-    state->trackpad_mode_active = want_active;
-    state->trackpad_reconnect_pending = true;
-}
-
 /* Decapsulate and send to the other box */
 void handle_proxy_msg(uart_packet_t *packet, device_t *state) {
     queue_packet(&packet->data[1], (enum packet_type_e)packet->data[0], PACKET_DATA_LENGTH - 1);
