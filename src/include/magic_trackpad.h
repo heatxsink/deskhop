@@ -35,6 +35,13 @@ typedef struct {
 
 bool mt_decode_report(const uint8_t *report, int len, mt_frame_t *out);
 
+/* Discrete swipe outputs for 3-finger horizontal gestures. */
+typedef enum {
+    MT_SWIPE_NONE  = 0,
+    MT_SWIPE_LEFT  = 1,
+    MT_SWIPE_RIGHT = 2,
+} mt_swipe_t;
+
 /* Per-trackpad gesture tracking. Persists across frames. */
 typedef struct {
     int16_t  prev_x[MT_MAX_FINGERS];
@@ -42,15 +49,23 @@ typedef struct {
     uint8_t  prev_id[MT_MAX_FINGERS];
     uint8_t  prev_count;
     bool     have_prev;
+
+    /* 3-finger swipe accumulator. Reset whenever finger_count changes
+       away from 3. Triggers a one-shot swipe when |accum| crosses the
+       threshold. */
+    int32_t  swipe_accum_x;
+    bool     swipe_emitted;
 } mt_gesture_state_t;
 
 void mt_gesture_init(mt_gesture_state_t *s);
 
-/* Consume a frame and produce mouse-pipeline values.
-   Writes into out_move_x/y/wheel/pan. Returns false if no usable signal
-   (transition frame, finger count change, etc.). */
+/* Consume a frame and produce mouse-pipeline values + optional swipe event.
+   Writes into out_move_x/y/wheel/pan. Sets *out_swipe to MT_SWIPE_LEFT or
+   MT_SWIPE_RIGHT for at most one frame per 3-finger gesture; otherwise
+   MT_SWIPE_NONE. Returns true if movement deltas (move/wheel/pan) are usable. */
 bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
                      int32_t *out_move_x, int32_t *out_move_y,
-                     int32_t *out_wheel, int32_t *out_pan);
+                     int32_t *out_wheel, int32_t *out_pan,
+                     mt_swipe_t *out_swipe);
 
 #endif /* MAGIC_TRACKPAD_H_ */

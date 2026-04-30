@@ -76,13 +76,19 @@ static int find_prev(mt_gesture_state_t *s, uint8_t id) {
 #define POINTER_DIV  4
 #define SCROLL_DIV   12
 
+/* 3-finger horizontal swipe must accumulate this much trackpad-x distance
+   in one direction before it fires. Tuned for ~1/3 of pad width. */
+#define SWIPE_THRESHOLD_X  600
+
 bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
                      int32_t *out_move_x, int32_t *out_move_y,
-                     int32_t *out_wheel, int32_t *out_pan) {
+                     int32_t *out_wheel, int32_t *out_pan,
+                     mt_swipe_t *out_swipe) {
     *out_move_x = 0;
     *out_move_y = 0;
     *out_wheel  = 0;
     *out_pan    = 0;
+    *out_swipe  = MT_SWIPE_NONE;
 
     bool emit = false;
 
@@ -90,12 +96,18 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
     if (frame->finger_count == 0) {
         s->prev_count = 0;
         s->have_prev  = false;
+        s->swipe_accum_x = 0;
+        s->swipe_emitted = false;
         return false;
     }
 
     /* If finger count changed since last frame, skip the delta this frame
        to avoid jumps. Update tracking and bail. */
     if (!s->have_prev || frame->finger_count != s->prev_count) {
+        if (frame->finger_count != 3) {
+            s->swipe_accum_x = 0;
+            s->swipe_emitted = false;
+        }
         goto save_and_return;
     }
 
@@ -108,9 +120,8 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
             *out_move_y = dy / POINTER_DIV;
             emit = (*out_move_x != 0 || *out_move_y != 0);
         }
-    } else if (frame->finger_count >= 2) {
-        /* Average the two largest movers' deltas. For a stable scroll, both
-           fingers move in roughly the same direction. */
+    } else if (frame->finger_count == 2) {
+        /* Average the two fingers' deltas. */
         int32_t sum_dx = 0, sum_dy = 0;
         int matched = 0;
         for (int i = 0; i < 2; i++) {
@@ -131,6 +142,29 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
             *out_wheel = -dy / SCROLL_DIV;
             *out_pan   = dx / SCROLL_DIV;
             emit = (*out_wheel != 0 || *out_pan != 0);
+        }
+    } else if (frame->finger_count == 3) {
+        /* 3-finger swipe: accumulate average dx across frames. Fire once
+           per gesture when the threshold is crossed. */
+        int32_t sum_dx = 0;
+        int matched = 0;
+        for (int i = 0; i < 3; i++) {
+            int prev_idx = find_prev(s, frame->fingers[i].finger_id);
+            if (prev_idx < 0) continue;
+            sum_dx += frame->fingers[i].x - s->prev_x[prev_idx];
+            matched++;
+        }
+        if (matched == 3) {
+            s->swipe_accum_x += sum_dx / 3;
+            if (!s->swipe_emitted) {
+                if (s->swipe_accum_x >= SWIPE_THRESHOLD_X) {
+                    *out_swipe = MT_SWIPE_RIGHT;
+                    s->swipe_emitted = true;
+                } else if (s->swipe_accum_x <= -SWIPE_THRESHOLD_X) {
+                    *out_swipe = MT_SWIPE_LEFT;
+                    s->swipe_emitted = true;
+                }
+            }
         }
     }
 

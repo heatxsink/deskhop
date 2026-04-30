@@ -298,7 +298,9 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
             mt_frame_t frame;
             if (mt_decode_report(report, len, &frame)) {
                 int32_t dx = 0, dy = 0, wheel = 0, pan = 0;
-                bool moved = mt_gesture_step(&mt_state, &frame, &dx, &dy, &wheel, &pan);
+                mt_swipe_t swipe = MT_SWIPE_NONE;
+                bool moved = mt_gesture_step(&mt_state, &frame,
+                                             &dx, &dy, &wheel, &pan, &swipe);
 
                 /* Linux's hid-magicmouse reads data[1] as the click bitmap for
                    trackpad2 (BTN_MOUSE = data[1] & 1). We mirror that. */
@@ -318,6 +320,21 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                     output_mouse_report(&mr, &global_state);
                     if (dir != NONE) do_screen_switch(&global_state, dir);
                     global_state.mouse_buttons = buttons;
+                }
+
+                if (swipe != MT_SWIPE_NONE) {
+                    /* macOS Spaces switching: Ctrl+Left / Ctrl+Right. */
+                    uint8_t keycode = (swipe == MT_SWIPE_LEFT)
+                                      ? HID_KEY_ARROW_LEFT
+                                      : HID_KEY_ARROW_RIGHT;
+                    hid_keyboard_report_t press = {
+                        .modifier = KEYBOARD_MODIFIER_LEFTCTRL,
+                        .reserved = 0,
+                        .keycode  = { keycode, 0, 0, 0, 0, 0 },
+                    };
+                    hid_keyboard_report_t release = { 0 };
+                    queue_kbd_report(&press, &global_state);
+                    queue_kbd_report(&release, &global_state);
                 }
             }
             tuh_hid_receive_report(dev_addr, instance);
