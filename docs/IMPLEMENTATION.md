@@ -79,6 +79,17 @@ Extend the per-interface state to remember VID and PID so the report path can br
 
 ### Step 1.4 — Apple multi-touch decoder
 
+**Wire format locked down** from post-activation captures (see `docs/captures/trackpad-multitouch-frames.txt`):
+
+- Report ID `0x02` on Instance 1.
+- 12-byte header: `[02][...legacy padding 7B][0x31][ts_lo][ts_hi][0x23]`.
+- 9 bytes per finger; finger count = `(len - 12) / 9`.
+- X = signed 13-bit packed in finger bytes 0..1: `((t[1]<<27) | (t[0]<<19)) >> 19`.
+- Y = signed 13-bit packed in finger bytes 1..3, negated: `-(((t[3]<<30) | (t[2]<<22) | (t[1]<<14)) >> 19)`.
+- Finger byte 4 = touch_major, 5 = touch_minor, 6 = size, 7 = pressure/state, 8 packs orientation (top 3 bits +32) and finger id (low 4 bits).
+
+Note that finger byte 1 participates in **both** X and Y — the bit-packing crosses byte boundaries.
+
 New module `src/magic_trackpad.c` + `src/include/magic_trackpad.h`. Reference: Linux `drivers/hid/hid-magicmouse.c`, specifically the trackpad-2 USB report handler.
 
 ```c
