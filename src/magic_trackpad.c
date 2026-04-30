@@ -76,9 +76,11 @@ static int find_prev(mt_gesture_state_t *s, uint8_t id) {
 #define POINTER_DIV  4
 #define SCROLL_DIV   12
 
-/* 3-finger horizontal swipe must accumulate this much trackpad-x distance
-   in one direction before it fires. Tuned for ~1/3 of pad width. */
-#define SWIPE_THRESHOLD_X  600
+/* 3-finger horizontal swipe must accumulate this much summed trackpad-x
+   distance (across all three fingers) in one direction before it fires.
+   Working in raw sum (not per-finger average) avoids integer-division
+   truncation eating tiny per-frame contributions. ~1/4 pad width per finger. */
+#define SWIPE_THRESHOLD_X  1200
 
 bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
                      int32_t *out_move_x, int32_t *out_move_y,
@@ -102,12 +104,11 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
     }
 
     /* If finger count changed since last frame, skip the delta this frame
-       to avoid jumps. Update tracking and bail. */
+       to avoid jumps. Update tracking and bail. Always reset 3-finger swipe
+       state on a transition -- a fresh 3-finger gesture should arm cleanly. */
     if (!s->have_prev || frame->finger_count != s->prev_count) {
-        if (frame->finger_count != 3) {
-            s->swipe_accum_x = 0;
-            s->swipe_emitted = false;
-        }
+        s->swipe_accum_x = 0;
+        s->swipe_emitted = false;
         goto save_and_return;
     }
 
@@ -144,8 +145,8 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
             emit = (*out_wheel != 0 || *out_pan != 0);
         }
     } else if (frame->finger_count == 3) {
-        /* 3-finger swipe: accumulate average dx across frames. Fire once
-           per gesture when the threshold is crossed. */
+        /* 3-finger swipe: accumulate the per-frame summed dx across all three
+           fingers. Fire once per gesture when the threshold is crossed. */
         int32_t sum_dx = 0;
         int matched = 0;
         for (int i = 0; i < 3; i++) {
@@ -155,7 +156,7 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
             matched++;
         }
         if (matched == 3) {
-            s->swipe_accum_x += sum_dx / 3;
+            s->swipe_accum_x += sum_dx;
             if (!s->swipe_emitted) {
                 if (s->swipe_accum_x >= SWIPE_THRESHOLD_X) {
                     *out_swipe = MT_SWIPE_RIGHT;

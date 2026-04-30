@@ -335,6 +335,20 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                     hid_keyboard_report_t release = { 0 };
                     queue_kbd_report(&press, &global_state);
                     queue_kbd_report(&release, &global_state);
+                    dh_debug_printf("3-finger swipe %s -> Ctrl+%s\n",
+                                    swipe == MT_SWIPE_LEFT ? "LEFT" : "RIGHT",
+                                    swipe == MT_SWIPE_LEFT ? "Left" : "Right");
+                }
+
+                /* Periodic visibility on 3-finger frames so we can tell whether
+                   the gesture is recognized but the threshold isn't crossing,
+                   versus the trackpad not reporting 3 fingers at all. Limited
+                   to every 8th frame to avoid CDC backpressure. */
+                static uint8_t three_finger_log_div = 0;
+                if (frame.finger_count == 3 && (++three_finger_log_div & 0x07) == 0) {
+                    dh_debug_printf("3F frame: accum_x=%ld emitted=%d\n",
+                                    (long)mt_state.swipe_accum_x,
+                                    mt_state.swipe_emitted ? 1 : 0);
                 }
             }
             tuh_hid_receive_report(dev_addr, instance);
