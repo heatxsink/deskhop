@@ -110,6 +110,20 @@ typedef struct {
     int32_t             pointer_rem_x;
     int32_t             pointer_rem_y;
 
+    /* Scroll axis lock. Once the user has moved more than the lock
+       threshold along the dominant axis, we lock to that axis and zero
+       the other for the rest of the gesture. Mirrors libinput's
+       tp_gesture_apply_scroll_constraints in spirit (much simpler --
+       no exponential vector decay, no time-spent-on-axis tracking).
+       Resets at SCROLL exit. */
+    enum {
+        SCROLL_AXIS_NONE = 0,
+        SCROLL_AXIS_VERTICAL,
+        SCROLL_AXIS_HORIZONTAL,
+    }                   scroll_axis;
+    int32_t             scroll_axis_accum_x;
+    int32_t             scroll_axis_accum_y;
+
     /* SWIPE accumulation for direction lock + threshold. */
     int32_t             swipe_accum_x;
     int32_t             swipe_accum_y;
@@ -132,6 +146,11 @@ typedef struct {
    summed across all fingers. Same value Phase 1's swipe code used; we
    inherit the muscle memory. */
 #define GESTURE_SWIPE_THRESHOLD             1200
+
+/* Scroll axis-lock activation distance: ~3 mm of finger motion in the
+   dominant direction. Below this, we emit both axes (free scroll).
+   Above, we lock to whichever direction has more motion. */
+#define GESTURE_SCROLL_LOCK_THRESHOLD       150
 
 /* SCROLL/POINTER divisors: tuned for Magic Trackpad 2 raw units. */
 #define GESTURE_POINTER_DIV   4

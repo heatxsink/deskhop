@@ -328,7 +328,8 @@ classify_motion(tp_gesture_t *g, const mt_frame_t *frame) {
 }
 
 /* Compute summed-y delta across active fingers since last frame -- used
-   by SCROLL state to drive wheel/pan output. */
+   by SCROLL state to drive wheel/pan output. Applies the scroll
+   axis-lock constraint after computing raw deltas. */
 static void
 compute_scroll_delta(tp_gesture_t *g, const mt_frame_t *frame, int32_t *out_wheel, int32_t *out_pan) {
     int32_t sum_dx = 0, sum_dy = 0;
@@ -345,11 +346,31 @@ compute_scroll_delta(tp_gesture_t *g, const mt_frame_t *frame, int32_t *out_whee
         *out_pan   = 0;
         return;
     }
-    /* Average per-finger to feel like a single scroll motion, then add
-       the carried sub-pixel remainder before division so slow scrolls
-       don't truncate to zero forever. Phase 1 used the same trick. */
+    /* Average per-finger to feel like a single scroll motion. */
     int32_t avg_dx = sum_dx / n;
     int32_t avg_dy = sum_dy / n;
+
+    /* Axis-lock: until we've seen enough total motion to be confident,
+       allow free scrolling on both axes. Once one axis has more than
+       SCROLL_LOCK_THRESHOLD of accumulated motion, lock to it and zero
+       the orthogonal axis for the rest of the gesture. */
+    if (g->scroll_axis == 0 /* SCROLL_AXIS_NONE */) {
+        g->scroll_axis_accum_x += avg_dx;
+        g->scroll_axis_accum_y += avg_dy;
+        int32_t abs_x = g->scroll_axis_accum_x < 0 ? -g->scroll_axis_accum_x : g->scroll_axis_accum_x;
+        int32_t abs_y = g->scroll_axis_accum_y < 0 ? -g->scroll_axis_accum_y : g->scroll_axis_accum_y;
+        if (abs_x >= GESTURE_SCROLL_LOCK_THRESHOLD || abs_y >= GESTURE_SCROLL_LOCK_THRESHOLD) {
+            g->scroll_axis = (abs_y > abs_x) ? 1 /* VERTICAL */ : 2 /* HORIZONTAL */;
+        }
+    }
+    if (g->scroll_axis == 1 /* SCROLL_AXIS_VERTICAL */) {
+        avg_dx = 0;
+    } else if (g->scroll_axis == 2 /* SCROLL_AXIS_HORIZONTAL */) {
+        avg_dy = 0;
+    }
+
+    /* Add sub-pixel remainder before dividing so slow scrolls don't
+       truncate to zero forever. Phase 1 used the same trick. */
     int32_t dx     = avg_dx + g->scroll_rem_x;
     int32_t dy     = avg_dy + g->scroll_rem_y;
     *out_pan       = dx / GESTURE_SCROLL_DIV;
@@ -423,10 +444,13 @@ bool tp_gesture_post_frame(tp_gesture_t *g, const mt_frame_t *frame, uint32_t no
         g->swipe_accum_x = 0;
         g->swipe_accum_y = 0;
         g->swipe_emitted = false;
-        g->scroll_rem_x  = 0;
-        g->scroll_rem_y  = 0;
-        g->pointer_rem_x = 0;
-        g->pointer_rem_y = 0;
+        g->scroll_rem_x       = 0;
+        g->scroll_rem_y       = 0;
+        g->pointer_rem_x      = 0;
+        g->pointer_rem_y      = 0;
+        g->scroll_axis        = 0;
+        g->scroll_axis_accum_x = 0;
+        g->scroll_axis_accum_y = 0;
         return false;
     }
 
@@ -440,10 +464,13 @@ bool tp_gesture_post_frame(tp_gesture_t *g, const mt_frame_t *frame, uint32_t no
         g->finger_count = frame->finger_count;
         record_initial_positions(g, frame);
         update_prev_positions(g, frame);
-        g->scroll_rem_x  = 0;
-        g->scroll_rem_y  = 0;
-        g->pointer_rem_x = 0;
-        g->pointer_rem_y = 0;
+        g->scroll_rem_x       = 0;
+        g->scroll_rem_y       = 0;
+        g->pointer_rem_x      = 0;
+        g->pointer_rem_y      = 0;
+        g->scroll_axis        = 0;
+        g->scroll_axis_accum_x = 0;
+        g->scroll_axis_accum_y = 0;
         g->swipe_accum_x = 0;
         g->swipe_accum_y = 0;
         g->swipe_emitted = false;
