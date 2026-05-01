@@ -10,6 +10,7 @@ option(DH_DEBUG "Build a debug version" OFF)
 option(DH_DEBUG_CDC_FLASH "Enable CDC command to trigger bootloader mode" OFF)
 option(DH_DEBUG_TRACKPAD "Log HID descriptors and Apple HID reports for trackpad work (requires DH_DEBUG)" OFF)
 option(DH_TRACKPAD_PHASE1 "Apple Magic Trackpad gesture translation: multi-touch decode, two-finger scroll, three-finger workspace swipe. Default ON. Disable with -DDH_TRACKPAD_PHASE1=OFF to fall back to plain-mouse behavior for the trackpad." ON)
+option(DH_TRACKPAD_GESTURES "Path G: faithful port of libinput's gesture state machine, scoped to 2F scroll + 3F/4F swipe (pinch / hold / 3FG-drag intentionally deferred). Replaces Phase 1's hand-rolled scroll/swipe paths when on. OFF by default." OFF)
 option(DH_TRACKPAD_TAP_TO_CLICK "Path A: faithful port of libinput's tap state machine. Adds tap-to-click, tap-and-drag, drag-lock, etc. once translation is complete. Compiles in src/magic_trackpad_tap.c. OFF by default; default builds keep flash budget unchanged." OFF)
 
 ## Hardware Configuration
@@ -75,6 +76,7 @@ set(COMMON_SOURCES
   ${SRC_DIR}/ramdisk.c
   ${SRC_DIR}/magic_trackpad.c
   ${SRC_DIR}/magic_trackpad_tap.c
+  ${SRC_DIR}/magic_trackpad_gestures.c
   ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/dcd_pio_usb.c
   ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
 )
@@ -144,6 +146,13 @@ endif()
 
 if (DH_TRACKPAD_TAP_TO_CLICK)
   add_definitions(-DDH_TRACKPAD_TAP_TO_CLICK)
+endif()
+
+if (DH_TRACKPAD_GESTURES)
+  if (NOT DH_TRACKPAD_PHASE1)
+    message(FATAL_ERROR "DH_TRACKPAD_GESTURES requires DH_TRACKPAD_PHASE1=ON (it replaces Phase 1's scroll/swipe paths in-place).")
+  endif()
+  add_definitions(-DDH_TRACKPAD_GESTURES)
 endif()
   
 target_include_directories(${binary} PUBLIC ${COMMON_INCLUDES})

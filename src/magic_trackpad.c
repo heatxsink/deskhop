@@ -14,6 +14,17 @@
    carries a void* pointing here so the header doesn't need to know about
    the libinput-port internals when the flag is off. */
 static tp_tap_t mt_tap_state;
+#endif
+
+#ifdef DH_TRACKPAD_GESTURES
+#include "magic_trackpad_gestures.h"
+/* Same pattern as the tap state above: one static instance for the
+   (single) trackpad. Path G replaces Phase 1's scroll/swipe paths in
+   mt_gesture_step when this flag is on. */
+static tp_gesture_t mt_gesture_state_path_g;
+#endif
+
+#if defined(DH_TRACKPAD_TAP_TO_CLICK) || defined(DH_TRACKPAD_GESTURES)
 
 extern int dh_debug_printf(const char *__restrict __format, ...);
 #ifdef DH_DEBUG_TRACKPAD
@@ -103,6 +114,10 @@ void mt_gesture_init(mt_gesture_state_t *s) {
 #ifdef DH_TRACKPAD_TAP_TO_CLICK
     tp_tap_init(&mt_tap_state);
     s->tap = &mt_tap_state;
+#endif
+#ifdef DH_TRACKPAD_GESTURES
+    tp_gesture_init(&mt_gesture_state_path_g);
+    s->gesture = &mt_gesture_state_path_g;
 #endif
 }
 
@@ -215,6 +230,29 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
        and synthesize the RELEASE events the state machine needs to fire
        a tap. */
     s->last_mt_frame_us = now_us;
+
+#ifdef DH_TRACKPAD_GESTURES
+    /* Path G: feed the frame to libinput's ported gesture state machine
+       and return its output bundle directly. Phase 1's hand-rolled
+       gesture logic below is short-circuited entirely when this flag
+       is on. */
+    {
+        tp_gesture_t *g = (tp_gesture_t *)s->gesture;
+        if (g) {
+            bool g_emit = tp_gesture_post_frame(g, frame, now_us);
+            *out_move_x = g->out.move_x;
+            *out_move_y = g->out.move_y;
+            *out_wheel  = g->out.wheel;
+            *out_pan    = g->out.pan;
+            switch (g->out.swipe) {
+            case GESTURE_OUT_SWIPE_LEFT:  *out_swipe = MT_SWIPE_LEFT;  break;
+            case GESTURE_OUT_SWIPE_RIGHT: *out_swipe = MT_SWIPE_RIGHT; break;
+            default: *out_swipe = MT_SWIPE_NONE; break;
+            }
+            return g_emit;
+        }
+    }
+#endif
 
     /* No fingers: just clear state, no signal. */
     if (frame->finger_count == 0) {
