@@ -32,7 +32,9 @@ const config_t default_config = {
                 .only_if_inactive = SCREENSAVER_A_ONLY_IF_INACTIVE,
                 .idle_time_us = (uint64_t)SCREENSAVER_A_IDLE_TIME_SEC * 1000000,
                 .max_time_us = (uint64_t)SCREENSAVER_A_MAX_TIME_SEC * 1000000,
-            }
+            },
+            .lock_modifier = KEYBOARD_MODIFIER_LEFTGUI,
+            .lock_keycode  = HID_KEY_L,
         },
     .output[OUTPUT_B] =
         {
@@ -52,7 +54,9 @@ const config_t default_config = {
                 .only_if_inactive = SCREENSAVER_B_ONLY_IF_INACTIVE,
                 .idle_time_us = (uint64_t)SCREENSAVER_B_IDLE_TIME_SEC * 1000000,
                 .max_time_us = (uint64_t)SCREENSAVER_B_MAX_TIME_SEC * 1000000,
-            }
+            },
+            .lock_modifier = KEYBOARD_MODIFIER_LEFTGUI,
+            .lock_keycode  = HID_KEY_L,
         },
     .enforce_ports = ENFORCE_PORTS,
     .force_kbd_boot_protocol = ENFORCE_KEYBOARD_BOOT_PROTOCOL,

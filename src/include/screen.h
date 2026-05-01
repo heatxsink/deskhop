@@ -48,4 +48,13 @@ typedef struct {
     uint8_t pos;               // Screen position on this output
     uint8_t mouse_park_pos;    // Where the mouse goes after switch
     screensaver_t screensaver; // Screensaver parameters for this output
+
+    /* Per-output screen-lock keystroke. When the user fires the lock
+       hotkey (currently hardcoded as Super+L globally), deskhop emits
+       this modifier+keycode pair to this output. Defaults to Super+L
+       (0x08+0x0F), which works on Linux/Windows; macOS users typically
+       set 0x09+0x14 (Ctrl+Cmd+Q). modifier is the standard HID
+       modifier bitmask (KEYBOARD_MODIFIER_*). keycode is a HID usage. */
+    uint8_t lock_modifier;
+    uint8_t lock_keycode;
 } output_t;

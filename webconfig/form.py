@@ -48,6 +48,24 @@ OUTPUT_ = [
     FormField(6, "Operating System", 1, {1: "Linux", 2: "MacOS", 3: "Windows", 4: "Android", 255: "Other"}, "uint8"),
     FormField(7, "Screen Position", 1, {1: "Left", 2: "Right"}, "uint8"),
     FormField(8, "Cursor Park Position", 0, {0: "Top", 1: "Bottom", 3: "Previous"}, "uint8"),
+    FormField(1004, "Screen Lock Hotkey (emitted)", elem="label"),
+    # Modifier bitmask values: LCTRL=0x01 LSHIFT=0x02 LALT=0x04 LGUI=0x08
+    #                          RCTRL=0x10 RSHIFT=0x20 RALT=0x40 RGUI=0x80
+    # Common combos are the dropdown values below.
+    FormField(13, "Lock Modifier", 0x08, {
+        0x08: "Super (Linux/Win)",
+        0x09: "Ctrl + Cmd (macOS)",
+        0x05: "Ctrl + Alt",
+        0x0C: "Ctrl + Win",
+        0x06: "Shift + Alt",
+    }, "uint8"),
+    FormField(14, "Lock Keycode", 0x0F, {
+        0x0F: "L",
+        0x14: "Q",
+        0x4C: "Delete",
+        0x29: "Escape",
+        0x16: "S",
+    }, "uint8"),
     FormField(1003, "Screensaver", elem="label"),
     FormField(9, "Mode", 0, {0: "Disabled", 1: "Pong", 2: "Jitter"}, "uint8"),
     FormField(10, "Only If Inactive", None, {}, "uint8", "checkbox"),
