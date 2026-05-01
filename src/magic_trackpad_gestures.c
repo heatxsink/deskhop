@@ -443,7 +443,39 @@ update_swipe_accum(tp_gesture_t *g, const mt_frame_t *frame) {
     return GESTURE_OUT_SWIPE_NONE;
 }
 
-bool tp_gesture_post_frame(tp_gesture_t *g, const mt_frame_t *frame, uint32_t now_us) {
+/* libinput src/evdev-mt-touchpad.c:751 (tp_unpin_finger). For each
+   pinned finger present in the current frame, check whether it has
+   moved more than the unpin threshold from its pinned center; if so,
+   unpin it. */
+static void
+update_pin_state(tp_gesture_t *g, const mt_frame_t *frame) {
+    for (int i = 0; i < frame->finger_count && i < MT_MAX_FINGERS; i++) {
+        int slot = slot_for(frame->fingers[i].finger_id);
+        if (!g->is_pinned[slot]) continue;
+        int32_t dx = frame->fingers[i].x - g->pinned_x[slot];
+        int32_t dy = frame->fingers[i].y - g->pinned_y[slot];
+        int32_t d_sq = dx * dx + dy * dy;
+        if (d_sq >= GESTURE_UNPIN_THRESHOLD_SQ) {
+            g->is_pinned[slot] = false;
+        }
+    }
+}
+
+/* Build an effective frame containing only non-pinned fingers. Pinned
+   fingers are invisible to gesture classification and motion delta
+   computation. The original frame's `timestamp` is preserved. */
+static void
+build_effective_frame(const tp_gesture_t *g, const mt_frame_t *src, mt_frame_t *dst) {
+    dst->timestamp = src->timestamp;
+    dst->finger_count = 0;
+    for (int i = 0; i < src->finger_count && i < MT_MAX_FINGERS; i++) {
+        int slot = slot_for(src->fingers[i].finger_id);
+        if (g->is_pinned[slot]) continue;
+        dst->fingers[dst->finger_count++] = src->fingers[i];
+    }
+}
+
+bool tp_gesture_post_frame(tp_gesture_t *g, const mt_frame_t *raw_frame, uint32_t now_us) {
     gesture_clear_output(g);
 
     /* Drive any pending timer expiry synchronously. tp_gesture_idle_tick
@@ -451,6 +483,14 @@ bool tp_gesture_post_frame(tp_gesture_t *g, const mt_frame_t *frame, uint32_t no
        every frame guarantees the FINGER_SWITCH_TIMEOUT fires within one
        frame of expiry rather than waiting for an idle tick. */
     tp_gesture_idle_tick(g, now_us);
+
+    /* Pin/unpin maintenance: unpin any pinned finger that has moved
+       past the threshold. Then build an effective frame stripped of
+       pinned fingers and feed that to the rest of the pipeline. */
+    update_pin_state(g, raw_frame);
+    mt_frame_t eff;
+    build_effective_frame(g, raw_frame, &eff);
+    const mt_frame_t *frame = &eff;
 
     /* No fingers: end any in-progress gesture and clear state. Critically,
        reset finger_count too -- otherwise the next touch sees
@@ -463,8 +503,15 @@ bool tp_gesture_post_frame(tp_gesture_t *g, const mt_frame_t *frame, uint32_t no
         g->state        = GESTURE_STATE_NONE;
         g->finger_count = 0;
         for (int s = 0; s < MT_MAX_FINGERS; s++) {
-            g->prev_valid[s]      = false;
+            g->prev_valid[s]       = false;
             g->initial_recorded[s] = false;
+            /* DON'T clear is_pinned here. This branch fires whenever the
+               *effective* frame is empty -- which happens when all fingers
+               are currently pinned (under a held physical click). Clearing
+               pin state here would defeat the pinning instantly. Pin state
+               is owned by tp_gesture_pin_fingers / tp_gesture_unpin_all
+               (click rising/falling edges) and update_pin_state (per-frame
+               threshold check). */
         }
         g->swipe_accum_x = 0;
         g->swipe_accum_y = 0;
@@ -513,6 +560,17 @@ bool tp_gesture_post_frame(tp_gesture_t *g, const mt_frame_t *frame, uint32_t no
             g->swipe_accum_y       = 0;
             g->swipe_emitted       = false;
             tp_gesture_handle_event(g, GESTURE_EVENT_FINGER_DETECTED, now_us);
+            /* For 1F, there's no SCROLL/SWIPE/PINCH disambiguation to do
+               -- 1F is unambiguously pointer motion. Skip the direction-
+               threshold dead zone in UNKNOWN by transitioning straight to
+               POINTER_MOTION. Especially important for the
+               "click + drag with same finger" case where a pinned finger
+               just unpinned: requiring another 1.5 mm of motion through
+               UNKNOWN before the cursor responds feels frozen.
+               2F+ keeps the threshold-based disambiguation. */
+            if (frame->finger_count == 1) {
+                tp_gesture_handle_event(g, GESTURE_EVENT_POINTER_MOTION_START, now_us);
+            }
             return false;
         }
     } else if (g->finger_count_pending != 0) {
@@ -555,6 +613,27 @@ bool tp_gesture_post_frame(tp_gesture_t *g, const mt_frame_t *frame, uint32_t no
 
     return (g->out.move_x || g->out.move_y || g->out.wheel || g->out.pan
             || g->out.swipe != GESTURE_OUT_SWIPE_NONE);
+}
+
+/* libinput src/evdev-mt-touchpad.c:772 (tp_pin_fingers). Mark every
+   finger present in the frame as pinned, snapshotting the current
+   position as the unpin reference center. Called from mt_gesture_step
+   on physical click rising edge. */
+void tp_gesture_pin_fingers(tp_gesture_t *g, const mt_frame_t *frame) {
+    for (int i = 0; i < frame->finger_count && i < MT_MAX_FINGERS; i++) {
+        int slot = slot_for(frame->fingers[i].finger_id);
+        g->is_pinned[slot] = true;
+        g->pinned_x[slot]  = frame->fingers[i].x;
+        g->pinned_y[slot]  = frame->fingers[i].y;
+    }
+}
+
+/* Clear all pin state. Called from mt_gesture_step on physical click
+   falling edge so the next click pins fresh. */
+void tp_gesture_unpin_all(tp_gesture_t *g) {
+    for (int s = 0; s < MT_MAX_FINGERS; s++) {
+        g->is_pinned[s] = false;
+    }
 }
 
 void tp_gesture_idle_tick(tp_gesture_t *g, uint32_t now_us) {
