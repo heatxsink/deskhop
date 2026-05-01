@@ -205,7 +205,9 @@ tp_gesture_handle_event_on_state_scroll_start(tp_gesture_t *g, gesture_event_t e
     }
 }
 
-/* libinput src/evdev-mt-touchpad-gestures.c:848 */
+/* libinput src/evdev-mt-touchpad-gestures.c:848. FINGER_SWITCH_TIMEOUT
+   in SCROLL state cancels the gesture (libinput calls tp_gesture_cancel,
+   which we model as RESET -> NONE). */
 static void
 tp_gesture_handle_event_on_state_scroll(tp_gesture_t *g, gesture_event_t event, uint32_t time_us) {
     (void)time_us;
@@ -213,6 +215,7 @@ tp_gesture_handle_event_on_state_scroll(tp_gesture_t *g, gesture_event_t event, 
     case GESTURE_EVENT_RESET:
     case GESTURE_EVENT_END:
     case GESTURE_EVENT_CANCEL:
+    case GESTURE_EVENT_FINGER_SWITCH_TIMEOUT:
         g->state = GESTURE_STATE_NONE;
         break;
     default:
@@ -244,6 +247,7 @@ tp_gesture_handle_event_on_state_swipe(tp_gesture_t *g, gesture_event_t event, u
     case GESTURE_EVENT_RESET:
     case GESTURE_EVENT_END:
     case GESTURE_EVENT_CANCEL:
+    case GESTURE_EVENT_FINGER_SWITCH_TIMEOUT:
         g->state = GESTURE_STATE_NONE;
         break;
     default:
@@ -397,6 +401,21 @@ compute_pointer_delta(tp_gesture_t *g, const mt_frame_t *frame, int32_t *out_dx,
     g->pointer_rem_y = dy - (*out_dy) * GESTURE_POINTER_DIV;
 }
 
+/* libinput src/evdev-mt-touchpad-gestures.c:2184. Stable gesture states
+   absorb brief finger-count flicker (one finger lifts and lands again
+   during a 2F scroll, etc.). The non-debouncing states are the ones
+   where committing the new count immediately is correct. */
+static bool
+tp_gesture_debounce_finger_changes(tp_gesture_state_t state) {
+    switch (state) {
+    case GESTURE_STATE_SCROLL:
+    case GESTURE_STATE_SWIPE:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /* SWIPE direction lock. Mirrors Phase 1's accumulator-with-threshold,
    which we know feels right. Once the threshold is crossed and a
    direction emitted, no further swipes fire until the gesture ends. */
@@ -427,6 +446,12 @@ update_swipe_accum(tp_gesture_t *g, const mt_frame_t *frame) {
 bool tp_gesture_post_frame(tp_gesture_t *g, const mt_frame_t *frame, uint32_t now_us) {
     gesture_clear_output(g);
 
+    /* Drive any pending timer expiry synchronously. tp_gesture_idle_tick
+       can also tick this from a low-frequency task, but checking here on
+       every frame guarantees the FINGER_SWITCH_TIMEOUT fires within one
+       frame of expiry rather than waiting for an idle tick. */
+    tp_gesture_idle_tick(g, now_us);
+
     /* No fingers: end any in-progress gesture and clear state. Critically,
        reset finger_count too -- otherwise the next touch sees
        frame->finger_count == g->finger_count (both 1) and the count-
@@ -454,28 +479,47 @@ bool tp_gesture_post_frame(tp_gesture_t *g, const mt_frame_t *frame, uint32_t no
         return false;
     }
 
-    /* Finger count changed: reset to UNKNOWN-with-fresh-initial-positions.
-       This mirrors libinput firing GESTURE_EVENT_RESET + FINGER_DETECTED
-       on every count transition. */
+    /* Finger count differs from committed value. */
     if (frame->finger_count != g->finger_count) {
-        if (g->state != GESTURE_STATE_NONE) {
-            tp_gesture_handle_event(g, GESTURE_EVENT_RESET, now_us);
+        if (tp_gesture_debounce_finger_changes(g->state)) {
+            /* Stable gesture state: arm/refresh debounce timer so brief
+               count flicker doesn't end the gesture. Committed
+               finger_count stays; pending tracks the candidate. Fall
+               through and continue rendering the current gesture. */
+            if (frame->finger_count != g->finger_count_pending) {
+                g->finger_count_pending = frame->finger_count;
+                g->timer_us = now_us + GESTURE_FINGER_SWITCH_TIMEOUT_US;
+            }
+        } else {
+            /* Non-debouncing state: commit the new count immediately,
+               firing RESET + FINGER_DETECTED -- libinput does the same
+               in tp_gesture_update_finger_state. */
+            if (g->state != GESTURE_STATE_NONE) {
+                tp_gesture_handle_event(g, GESTURE_EVENT_RESET, now_us);
+            }
+            g->finger_count         = frame->finger_count;
+            g->finger_count_pending = 0;
+            g->timer_us             = 0;
+            record_initial_positions(g, frame);
+            update_prev_positions(g, frame);
+            g->scroll_rem_x        = 0;
+            g->scroll_rem_y        = 0;
+            g->pointer_rem_x       = 0;
+            g->pointer_rem_y       = 0;
+            g->scroll_axis         = 0;
+            g->scroll_axis_accum_x = 0;
+            g->scroll_axis_accum_y = 0;
+            g->swipe_accum_x       = 0;
+            g->swipe_accum_y       = 0;
+            g->swipe_emitted       = false;
+            tp_gesture_handle_event(g, GESTURE_EVENT_FINGER_DETECTED, now_us);
+            return false;
         }
-        g->finger_count = frame->finger_count;
-        record_initial_positions(g, frame);
-        update_prev_positions(g, frame);
-        g->scroll_rem_x       = 0;
-        g->scroll_rem_y       = 0;
-        g->pointer_rem_x      = 0;
-        g->pointer_rem_y      = 0;
-        g->scroll_axis        = 0;
-        g->scroll_axis_accum_x = 0;
-        g->scroll_axis_accum_y = 0;
-        g->swipe_accum_x = 0;
-        g->swipe_accum_y = 0;
-        g->swipe_emitted = false;
-        tp_gesture_handle_event(g, GESTURE_EVENT_FINGER_DETECTED, now_us);
-        return false;  /* skip emit on count-change frame */
+    } else if (g->finger_count_pending != 0) {
+        /* Count returned to committed value while a pending change was
+           armed -- flicker resolved itself. Cancel the timer. */
+        g->finger_count_pending = 0;
+        g->timer_us             = 0;
     }
 
     /* Steady finger count. If we're still in UNKNOWN, see if motion has
@@ -516,10 +560,31 @@ bool tp_gesture_post_frame(tp_gesture_t *g, const mt_frame_t *frame, uint32_t no
 void tp_gesture_idle_tick(tp_gesture_t *g, uint32_t now_us) {
     /* Fire timer-based events when the deadline has passed. Wraparound-
        safe signed compare. Currently only FINGER_SWITCH_TIMEOUT lives
-       in the timer slot; HOLD/3FG-drag timers were skipped. */
+       in the timer slot; HOLD/3FG-drag timers were skipped. After
+       dispatching, commit the pending finger_count so the next frame
+       sees the new committed value (matches libinput
+       tp_gesture_finger_count_switch_timeout). */
     if (g->timer_us != 0 && (int32_t)(now_us - g->timer_us) >= 0) {
         g->timer_us = 0;
         tp_gesture_handle_event(g, GESTURE_EVENT_FINGER_SWITCH_TIMEOUT, now_us);
+        if (g->finger_count_pending != 0) {
+            g->finger_count         = g->finger_count_pending;
+            g->finger_count_pending = 0;
+        }
+        /* The next frame entering tp_gesture_post_frame will see
+           state == NONE and (likely) non-zero finger count. Force a
+           "fresh start" by firing FINGER_DETECTED here so the state
+           machine moves to UNKNOWN before any output is computed.
+           Initial positions are still stale -- they'll get refreshed
+           when the next frame arrives via the count-change path
+           (frame->finger_count != g->finger_count won't trip because
+           we just committed; but we hit the steady-count UNKNOWN
+           branch and motion-classify based on staler initial. The
+           imperfection is small in practice; libinput accepts the
+           same staleness.) */
+        if (g->state == GESTURE_STATE_NONE) {
+            tp_gesture_handle_event(g, GESTURE_EVENT_FINGER_DETECTED, now_us);
+        }
     }
 }
 

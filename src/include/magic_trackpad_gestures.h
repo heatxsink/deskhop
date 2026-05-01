@@ -86,7 +86,8 @@ typedef struct {
 typedef struct {
     bool                enabled;
     tp_gesture_state_t  state;
-    uint32_t            finger_count;     /* current frame finger count */
+    uint32_t            finger_count;     /* committed finger count */
+    uint32_t            finger_count_pending; /* tentative; 0 if none */
     uint32_t            initial_time_us;  /* time of state-NONE -> UNKNOWN */
     uint32_t            timer_us;         /* polled deadline, 0 = inactive */
 
