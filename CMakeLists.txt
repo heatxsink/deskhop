@@ -9,11 +9,8 @@ set(VERSION_MINOR 77)
 option(DH_DEBUG "Build a debug version" OFF)
 option(DH_DEBUG_CDC_FLASH "Enable CDC command to trigger bootloader mode" OFF)
 option(DH_DEBUG_TRACKPAD "Log HID descriptors and Apple HID reports for trackpad work (requires DH_DEBUG)" OFF)
-option(DH_DEBUG_TRACKPAD_LED "Toggle the onboard LED on every Magic Trackpad report received (no CDC needed)" OFF)
 option(DH_TRACKPAD_PHASE1 "Apple Magic Trackpad gesture translation: multi-touch decode, two-finger scroll, three-finger workspace swipe. Default ON. Disable with -DDH_TRACKPAD_PHASE1=OFF to fall back to plain-mouse behavior for the trackpad." ON)
-option(DH_TRACKPAD_PHASE1_SKIP_EMIT "Bisect aid: with PHASE1=ON, run decode + gesture state machine but skip the mouse/keyboard emit phase." OFF)
-option(DH_TRACKPAD_PHASE1_NO_SCREEN_SWITCH "Bisect aid: emit mouse reports but do not call do_screen_switch on edge crossings." OFF)
-option(DH_TRACKPAD_PHASE1_NO_OUTPUT_REPORT "Bisect aid: run update_mouse_position + create_mouse_report but do not call output_mouse_report." OFF)
+option(DH_TRACKPAD_TAP_TO_CLICK "Path A: faithful port of libinput's tap state machine. Adds tap-to-click, tap-and-drag, drag-lock, etc. once translation is complete. Compiles in src/magic_trackpad_tap.c. OFF by default; default builds keep flash budget unchanged." OFF)
 
 ## Hardware Configuration
 set(DP_PIN_DEFAULT 14 CACHE STRING "Default USB D+ Pin Number")
@@ -77,6 +74,7 @@ set(COMMON_SOURCES
   ${SRC_DIR}/main.c
   ${SRC_DIR}/ramdisk.c
   ${SRC_DIR}/magic_trackpad.c
+  ${SRC_DIR}/magic_trackpad_tap.c
   ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/dcd_pio_usb.c
   ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
 )
@@ -140,27 +138,12 @@ if (DH_DEBUG_TRACKPAD)
   add_definitions(-DDH_DEBUG_TRACKPAD)
 endif()
 
-if (DH_DEBUG_TRACKPAD_LED)
-  add_definitions(-DDH_DEBUG_TRACKPAD_LED)
-endif()
-
 if (DH_TRACKPAD_PHASE1)
   add_definitions(-DDH_TRACKPAD_PHASE1)
 endif()
 
-if (DH_TRACKPAD_PHASE1_SKIP_EMIT)
-  if (NOT DH_TRACKPAD_PHASE1)
-    message(FATAL_ERROR "DH_TRACKPAD_PHASE1_SKIP_EMIT only meaningful with DH_TRACKPAD_PHASE1=ON.")
-  endif()
-  add_definitions(-DDH_TRACKPAD_PHASE1_SKIP_EMIT)
-endif()
-
-if (DH_TRACKPAD_PHASE1_NO_SCREEN_SWITCH)
-  add_definitions(-DDH_TRACKPAD_PHASE1_NO_SCREEN_SWITCH)
-endif()
-
-if (DH_TRACKPAD_PHASE1_NO_OUTPUT_REPORT)
-  add_definitions(-DDH_TRACKPAD_PHASE1_NO_OUTPUT_REPORT)
+if (DH_TRACKPAD_TAP_TO_CLICK)
+  add_definitions(-DDH_TRACKPAD_TAP_TO_CLICK)
 endif()
   
 target_include_directories(${binary} PUBLIC ${COMMON_INCLUDES})
