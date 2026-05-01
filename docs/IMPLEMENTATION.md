@@ -528,6 +528,49 @@ Default Phase 1 build: 188 KB / 188 KB (100% of partition). Path A code estimate
 
 ---
 
+## Path G — port libinput's gesture state machine (scoped subset)
+
+> **Status: slice 1 landed (opt-in).** Skeleton + first-pass implementations of NONE / UNKNOWN / POINTER_MOTION / SCROLL_START / SCROLL / SWIPE_START / SWIPE. Replaces Phase 1's hand-rolled scroll/swipe paths in `mt_gesture_step` when `DH_TRACKPAD_GESTURES=ON`. Default builds untouched. Pinch / hold / 3FG-drag / edge-scroll states intentionally deferred.
+
+Faithful (but scope-trimmed) port of `src/evdev-mt-touchpad-gestures.c`. The 7 states above are the ones reachable for Magic Trackpad's user-facing scroll + swipe behavior; the omitted states are present in the enum (state numbering preserved) but unreachable in our port.
+
+### Source files to translate
+
+| libinput source | Our target | Purpose |
+|---|---|---|
+| `src/evdev-mt-touchpad-gestures.c` | `src/magic_trackpad_gestures.c` | Gesture state machine, scoped subset |
+| `src/evdev-mt-touchpad.h` (gesture-related fields) | `src/include/magic_trackpad_gestures.h` | State enum, event enum, gesture state struct |
+
+### Translation rules
+
+Same as Path A (state names verbatim, event names verbatim, no new logic), with two scope-trimming notes:
+1. **State enum numbering preserved.** All 17 libinput states are listed in our enum so debugging side-by-side against libinput's source isn't off-by-N. Skipped states are marked `/* skipped */` and unreachable.
+2. **`tp_dispatch.gesture` -> `tp_gesture_t`.** Carry only the fields the in-scope states actually touch (initial position, prev position, scroll/pointer remainders, swipe accumulator). Each new field is annotated with the libinput equivalent it replaces.
+
+### Slice 1 (this PR) — basic gesture flow
+
+- NONE -> UNKNOWN on FINGER_DETECTED
+- UNKNOWN -> POINTER_MOTION / SCROLL_START / SWIPE_START on direction-threshold breach
+- POINTER_MOTION emits cursor delta with sub-pixel remainder accounting
+- SCROLL emits wheel/pan with remainder + natural-scroll convention
+- SWIPE accumulates X distance and emits one direction per gesture (LEFT/RIGHT)
+
+### Slice 2 (next) — refinement
+
+- Faithful libinput motion-smoothing on pointer (probably not needed for Magic Trackpad's higher native rate)
+- SCROLL direction-lock (libinput locks vertical-vs-horizontal once threshold is crossed; we currently emit both axes simultaneously)
+- FINGER_SWITCH_TIMEOUT to handle finger swaps mid-gesture
+- Verify SWIPE_TIMEOUT semantics (currently we accumulate without a timeout)
+
+### Out of scope (deferred indefinitely)
+
+- HOLD / HOLD_AND_MOTION: mostly relevant to laptop pads where you might rest fingers. Magic Trackpad on a desk doesn't really need it.
+- PINCH: standard mouse HID can't represent pinch. Translation to `Ctrl+Wheel` (zoom) is OS-conditional and ugly.
+- 3FG_DRAG_*: 3-finger drag is currently bound to workspace swipe in Phase 1; 3FG-drag would need its own button and conflicts.
+- Edge-scroll (single-finger edge zone): Magic Trackpad has no buttons or detents; edge scrolling on a smooth surface is jarring.
+
+---
+
 ## Cross-cutting
 
 ### Logging / debug

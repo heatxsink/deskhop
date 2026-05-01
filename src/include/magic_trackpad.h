@@ -77,6 +77,10 @@ typedef struct {
        libinput-port internals. magic_trackpad.c casts it back. */
     void    *tap;
 
+    /* Gesture state -- only present when DH_TRACKPAD_GESTURES is on.
+       Same void-pointer pattern as tap above. */
+    void    *gesture;
+
     /* Track button state across frames for BUTTON event generation. */
     uint8_t  prev_button_held;
 

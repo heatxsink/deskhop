@@ -50,6 +50,8 @@ A watchdog reboot bug surfaced during Phase 1 bringup when `output_mouse_report`
 
 **Path A working, opt-in.** All 30 libinput tap states ported. Tap-to-click, 2-finger right-click tap, 3-finger middle-click tap, and tap-and-drag all work. Drag-lock is implemented but defaults off (matches libinput). Palm/thumb rejection and tap-disabled-while-typing intentionally deferred — both are most relevant to laptop pads where palms rest on the surface; less applicable to a separate desk trackpad. Path A is gated behind `DH_TRACKPAD_TAP_TO_CLICK` (OFF by default) so default builds remain unchanged.
 
+**Path G slice 1 working, opt-in.** First slice of `evdev-mt-touchpad-gestures.c` ported: NONE / UNKNOWN / POINTER_MOTION / SCROLL_START / SCROLL / SWIPE_START / SWIPE. Replaces Phase 1's hand-rolled gesture decision tree when `DH_TRACKPAD_GESTURES=ON`. Pinch, hold, hold-and-motion, 3FG-drag, and edge-scroll states intentionally deferred (out of scope on a desk trackpad with no rest-of-hand or 3FG-drag bindings).
+
 The breakthrough during port: the touch state byte for Magic Trackpad 2 USB lives in **byte 3 (mask 0xC0, down = `state == 0x80`)**, not byte 8 as for older Magic Mouse / Trackpad 1. Initial guesses against an assumed byte 8 / mask 0xF0 / state values 0x30-0x40 lifecycle wasted hours. The kernel `hid-magicmouse.c` `magicmouse_emit_touch` function (`USB_DEVICE_ID_APPLE_MAGICTRACKPAD2` branch) is the authoritative reference for Magic Trackpad 2 USB byte layout — read it directly rather than relying on Magic Mouse / Trackpad 1 inferences.
 
 ## Approach
