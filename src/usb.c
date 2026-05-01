@@ -323,10 +323,12 @@ static void mt_tap_drain_pending(void) {
    events. Also fires TIMEOUT events when tap timers have expired. */
 void mt_tap_idle_tick_task(device_t *state) {
     (void)state;
+#ifdef DH_TRACKPAD_PHASE1
     uint32_t now_us = time_us_32();
     if (mt_gesture_idle_tick(&mt_state, now_us)) {
         mt_tap_drain_pending();
     }
+#endif
 }
 
 /* Invoked when received report from device via interrupt endpoint */
