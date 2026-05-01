@@ -178,11 +178,13 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
             }
         }
 
-        /* BUTTON events on physical click rising/falling edge. */
+        /* BUTTON events on physical click rising/falling edge. The edge
+           detection here is also used by Path G below for finger pinning;
+           we keep prev_button_held updated unconditionally even if the
+           tap event itself is a no-op. */
         if (button_held != s->prev_button_held) {
             tp_tap_handle_event(tap, 0, TAP_EVENT_BUTTON, now_us);
         }
-        s->prev_button_held = (uint8_t)button_held;
     }
 
     /* Mark this MT frame's arrival. Used by the tap idle tick to detect
@@ -195,6 +197,23 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
        and return its output bundle directly. */
     tp_gesture_t *g = (tp_gesture_t *)s->gesture;
     if (!g) return false;
+
+    /* Finger pinning. Mirror libinput's tp_pin_fingers / tp_unpin_finger
+       (src/evdev-mt-touchpad.c). On click rising edge we pin every
+       currently-down finger; on falling edge we unpin all. While pinned,
+       a finger's motion is suppressed (won't drift the cursor under the
+       press) until it moves >1.5 mm, at which point it unpins itself.
+       This is what enables "physical click + drag with 2nd finger": the
+       1st finger pins, the 2nd arrives unpinned and drives the cursor. */
+    bool button_was = (s->prev_button_held != 0);
+    bool button_now = (button_held != MT_BTN_NONE);
+    if (!button_was && button_now) {
+        tp_gesture_pin_fingers(g, frame);
+    } else if (button_was && !button_now) {
+        tp_gesture_unpin_all(g);
+    }
+    s->prev_button_held = (uint8_t)button_held;
+
     bool g_emit = tp_gesture_post_frame(g, frame, now_us);
     *out_move_x = g->out.move_x;
     *out_move_y = g->out.move_y;

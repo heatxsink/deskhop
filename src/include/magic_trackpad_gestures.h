@@ -104,6 +104,21 @@ typedef struct {
     int16_t             prev_y[MT_MAX_FINGERS];
     bool                prev_valid[MT_MAX_FINGERS];
 
+    /* Finger pinning. Translated from libinput's tp_pin_fingers /
+       tp_unpin_finger (src/evdev-mt-touchpad.c). On physical click
+       rising edge we pin every currently-down finger and snapshot its
+       position. Pinned fingers are excluded from gesture classification
+       and motion delta computation -- they don't drift the cursor while
+       the user is pressing the button. Each frame we check whether a
+       pinned finger has moved >1.5 mm from its pinned center; if so it
+       unpins and starts contributing to motion again. This is what
+       enables "physical click + drag with the second finger": the
+       clicking finger pins (anchors), the second finger arrives unpinned
+       and drives the cursor. */
+    int16_t             pinned_x[MT_MAX_FINGERS];
+    int16_t             pinned_y[MT_MAX_FINGERS];
+    bool                is_pinned[MT_MAX_FINGERS];
+
     /* Sub-pixel remainders for division, like Phase 1's scroll/pointer
        paths. Without these, slow finger motion truncates to zero forever. */
     int32_t             scroll_rem_y;
@@ -153,6 +168,10 @@ typedef struct {
    Above, we lock to whichever direction has more motion. */
 #define GESTURE_SCROLL_LOCK_THRESHOLD       150
 
+/* Finger-pin unpin distance: 1.5 mm (libinput's value, scaled to Magic
+   Trackpad 2 units at ~50 units/mm). Squared to avoid sqrt. */
+#define GESTURE_UNPIN_THRESHOLD_SQ          5625L
+
 /* SCROLL/POINTER divisors: tuned for Magic Trackpad 2 raw units. */
 #define GESTURE_POINTER_DIV   4
 #define GESTURE_SCROLL_DIV    12
@@ -173,5 +192,15 @@ bool tp_gesture_post_frame(tp_gesture_t *g,
    reports are arriving. Caller invokes from a low-frequency tick task,
    parallel to mt_gesture_idle_tick / mt_tap_idle_tick_task. */
 void tp_gesture_idle_tick(tp_gesture_t *g, uint32_t now_us);
+
+/* Pin every currently-down finger at its current position. Called by
+   the higher layer on physical click rising edge so the clicking
+   finger doesn't drift the cursor under the press. Mirrors libinput's
+   tp_pin_fingers. */
+void tp_gesture_pin_fingers(tp_gesture_t *g, const mt_frame_t *frame);
+
+/* Clear all pin state. Called on physical click falling edge so the
+   next click pins fresh. */
+void tp_gesture_unpin_all(tp_gesture_t *g);
 
 #endif /* DH_MAGIC_TRACKPAD */
