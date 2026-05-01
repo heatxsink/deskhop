@@ -25,12 +25,6 @@ _Static_assert(MAX_DEVICES <= CFG_TUH_DEVICE_MAX,
 static mt_gesture_state_t mt_state;
 #endif
 
-#ifdef DH_DEBUG_TRACKPAD_LED
-/* Set in tuh_hid_set_report_complete_cb. Currently informational only --
-   could be exposed to user via a status pattern from main loop later. */
-static volatile uint8_t dh_trackpad_activation_state; /* 0=pending, 1=ok, 2=fail */
-#endif
-
 #ifdef DH_TRACKPAD_PHASE1
 /* Switches Magic Trackpad 2 USB out of mouse-emulation mode and into the
    proprietary multi-touch report format. Layout matches Linux's
@@ -56,12 +50,6 @@ void tuh_hid_set_report_complete_cb(uint8_t dev_addr, uint8_t instance,
                                     uint16_t len) {
     dh_debug_printf("set_report complete: dev=%u inst=%u id=%02x type=%u len=%u\n",
                     dev_addr, instance, report_id, report_type, len);
-
-#ifdef DH_DEBUG_TRACKPAD_LED
-    if (report_type == 3 /* HID_REPORT_TYPE_FEATURE */) {
-        dh_trackpad_activation_state = (len > 0) ? 1 : 2;
-    }
-#endif
 }
 #endif /* DH_TRACKPAD_PHASE1 */
 
@@ -304,11 +292,18 @@ static void mt_tap_drain_pending(void) {
 #ifdef DH_TRACKPAD_TAP_TO_CLICK
     tp_tap_t *tap = (tp_tap_t *)mt_state.tap;
     if (!tap || tap->pending_count == 0) return;
+#ifdef DH_DEBUG_TRACKPAD
+    dh_debug_printf("drain: %u events\n", tap->pending_count);
+#endif
     for (int p = 0; p < tap->pending_count; p++) {
         tp_tap_button_event_t ev = tap->pending[p];
         uint8_t b = (uint8_t)global_state.mouse_buttons;
         if (ev.pressed) b |= (uint8_t)ev.button;
         else            b &= (uint8_t)~ev.button;
+#ifdef DH_DEBUG_TRACKPAD
+        dh_debug_printf("drain[%d]: btn=%u pressed=%u -> mouse_buttons=%u\n",
+                        p, ev.button, ev.pressed, b);
+#endif
         mouse_values_t tv = {
             .move_x = 0, .move_y = 0, .wheel = 0, .pan = 0,
             .buttons = b,
@@ -342,17 +337,6 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
         return;
 
     hid_interface_t *iface = &global_state.iface[dev_addr-1][instance];
-
-#ifdef DH_DEBUG_TRACKPAD_LED
-    /* Visible signal that trackpad reports are reaching this callback.
-       LED flicker = reports flowing; LED dark = nothing arriving on this
-       board. Non-blocking: just an instantaneous GPIO toggle, safe to call
-       from inside the host stack callback. */
-    if (iface->vendor_id == APPLE_VID && iface->product_id == MAGIC_TRACKPAD_PID) {
-        gpio_xor_mask(1u << GPIO_LED_PIN);
-    }
-    (void)dh_trackpad_activation_state;
-#endif
 
 #ifdef DH_TRACKPAD_PHASE1
     /* Magic Trackpad fast path: if the trackpad is in multi-touch mode the
@@ -403,7 +387,6 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
             uint8_t buttons = (uint8_t)held_button;
             bool buttons_changed = (buttons != global_state.mouse_buttons);
 
-#ifndef DH_TRACKPAD_PHASE1_SKIP_EMIT
             /* Throttle emit to ~100 Hz, accumulating motion across frames in
                between. The trackpad's native report rate (100-250 Hz) appears
                to trigger a watchdog reboot when output_mouse_report fires on
@@ -433,21 +416,13 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                 };
                 enum screen_pos_e dir = update_mouse_position(&global_state, &values);
                 mouse_report_t mr = create_mouse_report(&global_state, &values);
-#ifndef DH_TRACKPAD_PHASE1_NO_OUTPUT_REPORT
                 output_mouse_report(&mr, &global_state);
-#endif
-#ifndef DH_TRACKPAD_PHASE1_NO_SCREEN_SWITCH
                 if (dir != NONE) do_screen_switch(&global_state, dir);
-#endif
                 global_state.mouse_buttons = buttons;
                 accum_dx = accum_dy = accum_wheel = accum_pan = 0;
                 last_emit_us = now_us;
-                (void)mr; (void)dir;
             }
-#endif
-            (void)moved; (void)buttons; (void)buttons_changed;
 
-#ifndef DH_TRACKPAD_PHASE1_SKIP_EMIT
             if (swipe != MT_SWIPE_NONE) {
                 /* Workspace / Spaces switching:
                      GNOME (Linux) default = Ctrl+Alt+Left / Ctrl+Alt+Right
@@ -475,8 +450,6 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                     queue_packet((uint8_t *)&release, KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
                 }
             }
-#endif
-            (void)swipe;
 
 #ifdef DH_DEBUG_TRACKPAD
             /* Per-frame visibility on 3-finger gestures, throttled to 1 in 8

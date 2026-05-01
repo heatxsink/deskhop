@@ -14,6 +14,13 @@
    carries a void* pointing here so the header doesn't need to know about
    the libinput-port internals when the flag is off. */
 static tp_tap_t mt_tap_state;
+
+extern int dh_debug_printf(const char *__restrict __format, ...);
+#ifdef DH_DEBUG_TRACKPAD
+#define DBG_GS(...) dh_debug_printf(__VA_ARGS__)
+#else
+#define DBG_GS(...) do {} while (0)
+#endif
 #endif
 
 #define MT_REPORT_ID  0x02
@@ -24,15 +31,20 @@ static inline int32_t sign_extend(int32_t value, int bits) {
     return (value ^ mask) - mask;
 }
 
-/* libinput hid-magicmouse.c uses the high 4 bits of byte 8 to encode the
-   per-finger lifecycle state. Anything other than NONE means the finger
-   is currently in contact; NONE means the finger has just lifted. */
-#define MT_TOUCH_STATE_MASK  0xF0
-#define MT_TOUCH_STATE_NONE  0x00
-/* (also defined for reference: 0x30 START, 0x40 DRAG) */
+/* For Magic Trackpad 2 USB the per-finger touch state lives in the top
+   2 bits of byte 3 (the same byte whose low 2 bits encode the high bits
+   of the y coordinate). The contact-down condition is exactly state ==
+   0x80 -- 0x00/0x40/0xC0 are not actively touching. Reference:
+   drivers/hid/hid-magicmouse.c, USB_DEVICE_ID_APPLE_MAGICTRACKPAD2 path:
+       state = tdata[3] & 0xC0;
+       down  = state == 0x80;
+   Byte 8 is (orientation << 5) | (id & 0xf), not state -- that was the
+   source of the long phantom-contact bug. */
+#define MT_TOUCH_STATE_MASK  0xC0
+#define MT_TOUCH_STATE_DOWN  0x80
 
 static bool finger_is_down(const uint8_t *t) {
-    return (t[8] & MT_TOUCH_STATE_MASK) != MT_TOUCH_STATE_NONE;
+    return (t[3] & MT_TOUCH_STATE_MASK) == MT_TOUCH_STATE_DOWN;
 }
 
 static void decode_finger(const uint8_t *t, mt_finger_t *out) {
@@ -157,6 +169,7 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
                 tap->touches[slot].is_thumb  = false;
                 tap->touches[slot].is_palm   = false;
                 if (tap->nfingers_down < MT_MAX_FINGERS) tap->nfingers_down++;
+                DBG_GS("gs:T s=%u id=%u\n", slot, id);
                 tp_tap_handle_event(tap, slot, TAP_EVENT_TOUCH, now_us);
             } else if (tap->touches[slot].state == TAP_TOUCH_STATE_TOUCH) {
                 int32_t dx = frame->fingers[i].x - tap->touches[slot].initial_x;
@@ -181,6 +194,7 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
             }
             if (!found) {
                 if (tap->nfingers_down) tap->nfingers_down--;
+                DBG_GS("gs:R s=%d\n", slot);
                 tp_tap_handle_event(tap, (uint8_t)slot, TAP_EVENT_RELEASE, now_us);
                 tap->touches[slot].state = TAP_TOUCH_STATE_IDLE;
             }
@@ -336,6 +350,7 @@ bool mt_gesture_idle_tick(mt_gesture_state_t *s, uint32_t now_us) {
     #define MT_TAP_LIFT_INACTIVE_US 200000UL
     if (tap->nfingers_down > 0 &&
         (int32_t)(now_us - s->last_mt_frame_us) >= MT_TAP_LIFT_INACTIVE_US) {
+        DBG_GS("gs:IR\n");
         for (int slot = 0; slot < MT_MAX_FINGERS; slot++) {
             if (tap->touches[slot].state == TAP_TOUCH_STATE_IDLE) continue;
             if (tap->nfingers_down) tap->nfingers_down--;

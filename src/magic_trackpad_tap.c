@@ -14,6 +14,27 @@
 
 #include <string.h>
 
+extern int dh_debug_printf(const char *__restrict __format, ...);
+
+#ifdef DH_DEBUG_TRACKPAD
+static const char *event_name(tap_event_t e) {
+    switch (e) {
+        case TAP_EVENT_TOUCH:    return "TOUCH";
+        case TAP_EVENT_MOTION:   return "MOTION";
+        case TAP_EVENT_RELEASE:  return "RELEASE";
+        case TAP_EVENT_BUTTON:   return "BUTTON";
+        case TAP_EVENT_TIMEOUT:  return "TIMEOUT";
+        case TAP_EVENT_THUMB:    return "THUMB";
+        case TAP_EVENT_PALM:     return "PALM";
+        case TAP_EVENT_PALM_UP:  return "PALM_UP";
+    }
+    return "?";
+}
+#define DBG_TAP(...) dh_debug_printf(__VA_ARGS__)
+#else
+#define DBG_TAP(...) do {} while (0)
+#endif
+
 /* HID button bits. Match libinput's BTN_LEFT/RIGHT/MIDDLE constants. */
 #define TP_BTN_LEFT     0x01
 #define TP_BTN_RIGHT    0x02
@@ -95,8 +116,12 @@ void tp_tap_init(tp_tap_t *tap) {
 }
 
 void tp_tap_post_button(tp_tap_t *tap, uint32_t button, bool pressed, uint32_t time_us) {
-    if (tap->pending_count >= TP_TAP_PENDING_MAX)
-        return;  /* drop -- caller didn't drain fast enough */
+    if (tap->pending_count >= TP_TAP_PENDING_MAX) {
+        DBG_TAP("tap: post_button DROP btn=%u pressed=%u (queue full)\n", button, pressed);
+        return;
+    }
+    DBG_TAP("tap: post_button btn=%u pressed=%u t=%u (q=%u)\n",
+            button, pressed, time_us, tap->pending_count + 1);
     tap->pending[tap->pending_count++] = (tp_tap_button_event_t){
         .button  = button,
         .pressed = pressed,
@@ -263,88 +288,515 @@ tp_tap_tapped_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_
     }
 }
 
+/* libinput src/evdev-mt-touchpad-tap.c:371 */
 static void
 tp_tap_touch2_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t time_us) {
-    (void)tap; (void)ti; (void)event; (void)time_us;
-    /* TODO */
+    switch (event) {
+    case TAP_EVENT_TOUCH:
+        tap->state = TAP_STATE_TOUCH_3;
+        tap->saved_press_us = time_us;
+        tp_tap_set_timer(tap, time_us);
+        break;
+    case TAP_EVENT_RELEASE:
+        tap->state = TAP_STATE_TOUCH_2_RELEASE;
+        tap->saved_release_us = time_us;
+        tp_tap_set_timer(tap, time_us);
+        break;
+    case TAP_EVENT_MOTION:
+        tp_tap_move_to_dead(tap, ti);
+        break;
+    case TAP_EVENT_TIMEOUT:
+        tap->state = TAP_STATE_TOUCH_2_HOLD;
+        tp_gesture_tap_timeout(tap, time_us);
+        break;
+    case TAP_EVENT_BUTTON:
+        tap->state = TAP_STATE_DEAD;
+        break;
+    case TAP_EVENT_THUMB:
+        break;
+    case TAP_EVENT_PALM:
+        tap->state = TAP_STATE_TOUCH;
+        break;
+    case TAP_EVENT_PALM_UP:
+        break;
+    }
 }
 
+/* libinput src/evdev-mt-touchpad-tap.c:409 */
 static void
 tp_tap_touch2_hold_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t time_us) {
-    (void)tap; (void)ti; (void)event; (void)time_us;
-    /* TODO */
+    switch (event) {
+    case TAP_EVENT_TOUCH:
+        tap->state = TAP_STATE_TOUCH_3;
+        tap->saved_press_us = time_us;
+        tp_tap_set_timer(tap, time_us);
+        break;
+    case TAP_EVENT_RELEASE:
+        tap->state = TAP_STATE_HOLD;
+        break;
+    case TAP_EVENT_MOTION:
+        tp_tap_move_to_dead(tap, ti);
+        break;
+    case TAP_EVENT_TIMEOUT:
+        tap->state = TAP_STATE_TOUCH_2_HOLD;
+        break;
+    case TAP_EVENT_BUTTON:
+        tap->state = TAP_STATE_DEAD;
+        break;
+    case TAP_EVENT_THUMB:
+        break;
+    case TAP_EVENT_PALM:
+        tap->state = TAP_STATE_HOLD;
+        break;
+    case TAP_EVENT_PALM_UP:
+        break;
+    }
 }
 
+/* libinput src/evdev-mt-touchpad-tap.c:444 */
 static void
 tp_tap_touch2_release_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t time_us) {
-    (void)tap; (void)ti; (void)event; (void)time_us;
-    /* TODO */
+    switch (event) {
+    case TAP_EVENT_TOUCH:
+        tap->state = TAP_STATE_TOUCH_2_HOLD;
+        tap->touches[ti].state = TAP_TOUCH_STATE_DEAD;
+        tp_tap_clear_timer(tap);
+        break;
+    case TAP_EVENT_RELEASE:
+        tp_tap_notify(tap, tap->saved_press_us, 2, true);
+        if (tap->drag_enabled) {
+            tap->state = TAP_STATE_2FGTAP_TAPPED;
+            tp_tap_set_drag_timer(tap, time_us, 2);
+        } else {
+            tp_tap_notify(tap, tap->saved_release_us, 2, false);
+            tap->state = TAP_STATE_IDLE;
+        }
+        break;
+    case TAP_EVENT_MOTION:
+        tp_tap_move_to_dead(tap, ti);
+        break;
+    case TAP_EVENT_TIMEOUT:
+        tap->state = TAP_STATE_HOLD;
+        break;
+    case TAP_EVENT_BUTTON:
+        tap->state = TAP_STATE_DEAD;
+        break;
+    case TAP_EVENT_THUMB:
+        break;
+    case TAP_EVENT_PALM:
+        tap->state = TAP_STATE_IDLE;
+        break;
+    case TAP_EVENT_PALM_UP:
+        break;
+    }
 }
 
+/* libinput src/evdev-mt-touchpad-tap.c:513 */
 static void
 tp_tap_touch3_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t time_us) {
-    (void)tap; (void)ti; (void)event; (void)time_us;
-    /* TODO */
+    switch (event) {
+    case TAP_EVENT_TOUCH:
+        tap->state = TAP_STATE_DEAD;
+        tp_tap_clear_timer(tap);
+        break;
+    case TAP_EVENT_MOTION:
+        tp_tap_move_to_dead(tap, ti);
+        break;
+    case TAP_EVENT_TIMEOUT:
+        tap->state = TAP_STATE_TOUCH_3_HOLD;
+        tp_tap_clear_timer(tap);
+        tp_gesture_tap_timeout(tap, time_us);
+        break;
+    case TAP_EVENT_RELEASE:
+        tap->state = TAP_STATE_TOUCH_3_RELEASE;
+        tap->saved_release_us = time_us;
+        tp_tap_set_timer(tap, time_us);
+        break;
+    case TAP_EVENT_BUTTON:
+        tap->state = TAP_STATE_DEAD;
+        break;
+    case TAP_EVENT_THUMB:
+        break;
+    case TAP_EVENT_PALM:
+        tap->state = TAP_STATE_TOUCH_2;
+        break;
+    case TAP_EVENT_PALM_UP:
+        break;
+    }
 }
 
+/* libinput src/evdev-mt-touchpad-tap.c:551 */
 static void
 tp_tap_touch3_hold_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t time_us) {
-    (void)tap; (void)ti; (void)event; (void)time_us;
-    /* TODO */
+    switch (event) {
+    case TAP_EVENT_TOUCH:
+        tap->state = TAP_STATE_DEAD;
+        tp_tap_set_timer(tap, time_us);
+        break;
+    case TAP_EVENT_RELEASE:
+        tap->state = TAP_STATE_TOUCH_2_HOLD;
+        break;
+    case TAP_EVENT_MOTION:
+        tp_tap_move_to_dead(tap, ti);
+        break;
+    case TAP_EVENT_TIMEOUT:
+        break;
+    case TAP_EVENT_BUTTON:
+        tap->state = TAP_STATE_DEAD;
+        break;
+    case TAP_EVENT_THUMB:
+        break;
+    case TAP_EVENT_PALM:
+        tap->state = TAP_STATE_TOUCH_2_HOLD;
+        break;
+    case TAP_EVENT_PALM_UP:
+        break;
+    }
 }
 
+/* libinput src/evdev-mt-touchpad-tap.c:584 */
 static void
 tp_tap_touch3_release_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t time_us) {
-    (void)tap; (void)ti; (void)event; (void)time_us;
-    /* TODO */
+    switch (event) {
+    case TAP_EVENT_TOUCH:
+        tp_tap_notify(tap, tap->saved_press_us, 3, true);
+        tp_tap_notify(tap, tap->saved_release_us, 3, false);
+        tap->state = TAP_STATE_TOUCH_3;
+        tap->saved_press_us = time_us;
+        tp_tap_set_timer(tap, time_us);
+        break;
+    case TAP_EVENT_RELEASE:
+        tap->state = TAP_STATE_TOUCH_3_RELEASE_2;
+        tp_tap_set_timer(tap, time_us);
+        break;
+    case TAP_EVENT_MOTION:
+        tp_tap_notify(tap, tap->saved_press_us, 3, true);
+        tp_tap_notify(tap, tap->saved_release_us, 3, false);
+        tp_tap_move_to_dead(tap, ti);
+        break;
+    case TAP_EVENT_TIMEOUT:
+        tp_tap_notify(tap, tap->saved_press_us, 3, true);
+        tp_tap_notify(tap, tap->saved_release_us, 3, false);
+        tap->state = TAP_STATE_TOUCH_2_HOLD;
+        break;
+    case TAP_EVENT_BUTTON:
+        tp_tap_notify(tap, tap->saved_press_us, 3, true);
+        tp_tap_notify(tap, tap->saved_release_us, 3, false);
+        tap->state = TAP_STATE_DEAD;
+        break;
+    case TAP_EVENT_THUMB:
+        break;
+    case TAP_EVENT_PALM:
+        tap->state = TAP_STATE_TOUCH_2_RELEASE;
+        break;
+    case TAP_EVENT_PALM_UP:
+        break;
+    }
 }
 
+/* libinput src/evdev-mt-touchpad-tap.c:652 */
 static void
 tp_tap_touch3_release2_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t time_us) {
-    (void)tap; (void)ti; (void)event; (void)time_us;
-    /* TODO */
+    switch (event) {
+    case TAP_EVENT_TOUCH:
+        tp_tap_notify(tap, tap->saved_press_us, 3, true);
+        tp_tap_notify(tap, tap->saved_release_us, 3, false);
+        tap->state = TAP_STATE_TOUCH_2;
+        tap->saved_press_us = time_us;
+        tp_tap_set_timer(tap, time_us);
+        break;
+    case TAP_EVENT_RELEASE:
+        tp_tap_notify(tap, tap->saved_press_us, 3, true);
+        if (tap->drag_enabled) {
+            tap->state = TAP_STATE_3FGTAP_TAPPED;
+            tp_tap_set_drag_timer(tap, time_us, 3);
+        } else {
+            tp_tap_notify(tap, tap->saved_release_us, 3, false);
+            tap->state = TAP_STATE_IDLE;
+        }
+        break;
+    case TAP_EVENT_MOTION:
+        tp_tap_notify(tap, tap->saved_press_us, 3, true);
+        tp_tap_notify(tap, tap->saved_release_us, 3, false);
+        tp_tap_move_to_dead(tap, ti);
+        break;
+    case TAP_EVENT_TIMEOUT:
+        tp_tap_notify(tap, tap->saved_press_us, 3, true);
+        tp_tap_notify(tap, tap->saved_release_us, 3, false);
+        tap->state = TAP_STATE_HOLD;
+        break;
+    case TAP_EVENT_BUTTON:
+        tp_tap_notify(tap, tap->saved_press_us, 3, true);
+        tp_tap_notify(tap, tap->saved_release_us, 3, false);
+        tap->state = TAP_STATE_DEAD;
+        break;
+    case TAP_EVENT_THUMB:
+        break;
+    case TAP_EVENT_PALM:
+        tp_tap_notify(tap, tap->saved_press_us, 2, true);
+        if (tap->drag_enabled) {
+            tap->state = TAP_STATE_2FGTAP_TAPPED;
+        } else {
+            tp_tap_notify(tap, tap->saved_release_us, 2, false);
+            tap->state = TAP_STATE_IDLE;
+        }
+        break;
+    case TAP_EVENT_PALM_UP:
+        break;
+    }
 }
 
+/* libinput src/evdev-mt-touchpad-tap.c:750. Note: drag_lock and edge
+   detection are not ported -- we treat drag_lock as DISABLED, which
+   is libinput's default. */
 static void
 tp_tap_dragging_or_doubletap_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t time_us, int nfingers) {
-    (void)tap; (void)ti; (void)event; (void)time_us; (void)nfingers;
-    /* TODO */
+    (void)ti;
+    switch (event) {
+    case TAP_EVENT_TOUCH:
+        tp_tap_notify(tap, tap->saved_release_us, nfingers, false);
+        tap->state = TAP_STATE_TOUCH_2;
+        tap->saved_press_us = time_us;
+        tp_tap_set_timer(tap, time_us);
+        break;
+    case TAP_EVENT_RELEASE:
+        tap->state = TAP_STATE_1FGTAP_TAPPED;
+        tp_tap_notify(tap, tap->saved_release_us, nfingers, false);
+        tp_tap_notify(tap, tap->saved_press_us, 1, true);
+        tap->saved_release_us = time_us;
+        tp_tap_set_timer(tap, time_us);
+        break;
+    case TAP_EVENT_MOTION:
+    case TAP_EVENT_TIMEOUT: {
+        static const tp_tap_state_t dest[3] = {
+            TAP_STATE_1FGTAP_DRAGGING,
+            TAP_STATE_2FGTAP_DRAGGING,
+            TAP_STATE_3FGTAP_DRAGGING,
+        };
+        if (nfingers < 1 || nfingers > 3) break;
+        tap->state = dest[nfingers - 1];
+        break;
+    }
+    case TAP_EVENT_BUTTON:
+        tap->state = TAP_STATE_DEAD;
+        tp_tap_notify(tap, tap->saved_release_us, nfingers, false);
+        break;
+    case TAP_EVENT_THUMB:
+        break;
+    case TAP_EVENT_PALM: {
+        static const tp_tap_state_t dest[3] = {
+            TAP_STATE_1FGTAP_TAPPED,
+            TAP_STATE_2FGTAP_TAPPED,
+            TAP_STATE_3FGTAP_TAPPED,
+        };
+        if (nfingers < 1 || nfingers > 3) break;
+        tap->state = dest[nfingers - 1];
+        break;
+    }
+    case TAP_EVENT_PALM_UP:
+        break;
+    }
 }
 
+/* libinput src/evdev-mt-touchpad-tap.c:816. Edge detection skipped --
+   Magic Trackpad doesn't have meaningful "edge" events. drag_lock honored
+   when enabled: RELEASE keeps the button held and waits in DRAGGING_WAIT
+   for either a fresh touch (continue drag) or the draglock timer firing
+   (release). */
 static void
 tp_tap_dragging_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t time_us, int nfingers) {
-    (void)tap; (void)ti; (void)event; (void)time_us; (void)nfingers;
-    /* TODO */
+    (void)ti;
+    switch (event) {
+    case TAP_EVENT_TOUCH: {
+        static const tp_tap_state_t dest[3] = {
+            TAP_STATE_1FGTAP_DRAGGING_2,
+            TAP_STATE_2FGTAP_DRAGGING_2,
+            TAP_STATE_3FGTAP_DRAGGING_2,
+        };
+        if (nfingers < 1 || nfingers > 3) break;
+        tap->state = dest[nfingers - 1];
+        break;
+    }
+    case TAP_EVENT_RELEASE:
+        if (tap->drag_lock_enabled) {
+            static const tp_tap_state_t dest[3] = {
+                TAP_STATE_1FGTAP_DRAGGING_WAIT,
+                TAP_STATE_2FGTAP_DRAGGING_WAIT,
+                TAP_STATE_3FGTAP_DRAGGING_WAIT,
+            };
+            if (nfingers < 1 || nfingers > 3) break;
+            tap->state = dest[nfingers - 1];
+            tp_tap_set_draglock_timer(tap, time_us);
+        } else {
+            tp_tap_notify(tap, time_us, nfingers, false);
+            tap->state = TAP_STATE_IDLE;
+        }
+        break;
+    case TAP_EVENT_MOTION:
+    case TAP_EVENT_TIMEOUT:
+        /* noop */
+        break;
+    case TAP_EVENT_BUTTON:
+        tap->state = TAP_STATE_DEAD;
+        tp_tap_notify(tap, time_us, nfingers, false);
+        break;
+    case TAP_EVENT_THUMB:
+        break;
+    case TAP_EVENT_PALM:
+        tp_tap_notify(tap, tap->saved_release_us, nfingers, false);
+        tap->state = TAP_STATE_IDLE;
+        break;
+    case TAP_EVENT_PALM_UP:
+        break;
+    }
 }
 
+/* libinput src/evdev-mt-touchpad-tap.c:883 */
 static void
 tp_tap_dragging_wait_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t time_us, int nfingers) {
-    (void)tap; (void)ti; (void)event; (void)time_us; (void)nfingers;
-    /* TODO */
+    (void)ti;
+    switch (event) {
+    case TAP_EVENT_TOUCH: {
+        static const tp_tap_state_t dest[3] = {
+            TAP_STATE_1FGTAP_DRAGGING_OR_TAP,
+            TAP_STATE_2FGTAP_DRAGGING_OR_TAP,
+            TAP_STATE_3FGTAP_DRAGGING_OR_TAP,
+        };
+        if (nfingers < 1 || nfingers > 3) break;
+        tap->state = dest[nfingers - 1];
+        tp_tap_set_timer(tap, time_us);
+        break;
+    }
+    case TAP_EVENT_RELEASE:
+    case TAP_EVENT_MOTION:
+        log_tap_bug(tap, ti, event);
+        break;
+    case TAP_EVENT_TIMEOUT:
+        tap->state = TAP_STATE_IDLE;
+        tp_tap_notify(tap, time_us, nfingers, false);
+        break;
+    case TAP_EVENT_BUTTON:
+        tap->state = TAP_STATE_DEAD;
+        tp_tap_notify(tap, time_us, nfingers, false);
+        break;
+    case TAP_EVENT_THUMB:
+    case TAP_EVENT_PALM:
+        log_tap_bug(tap, ti, event);
+        break;
+    case TAP_EVENT_PALM_UP:
+        break;
+    }
 }
 
+/* libinput src/evdev-mt-touchpad-tap.c:930 */
 static void
 tp_tap_dragging_tap_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t time_us, int nfingers) {
-    (void)tap; (void)ti; (void)event; (void)time_us; (void)nfingers;
-    /* TODO */
+    switch (event) {
+    case TAP_EVENT_TOUCH:
+        tp_tap_notify(tap, time_us, nfingers, false);
+        tp_tap_clear_timer(tap);
+        tp_tap_move_to_dead(tap, ti);
+        break;
+    case TAP_EVENT_RELEASE:
+        tap->state = TAP_STATE_IDLE;
+        tp_tap_notify(tap, time_us, nfingers, false);
+        break;
+    case TAP_EVENT_MOTION:
+    case TAP_EVENT_TIMEOUT: {
+        static const tp_tap_state_t dest[3] = {
+            TAP_STATE_1FGTAP_DRAGGING,
+            TAP_STATE_2FGTAP_DRAGGING,
+            TAP_STATE_3FGTAP_DRAGGING,
+        };
+        if (nfingers < 1 || nfingers > 3) break;
+        tap->state = dest[nfingers - 1];
+        break;
+    }
+    case TAP_EVENT_BUTTON:
+        tap->state = TAP_STATE_DEAD;
+        tp_tap_notify(tap, time_us, nfingers, false);
+        break;
+    case TAP_EVENT_THUMB:
+        break;
+    case TAP_EVENT_PALM: {
+        static const tp_tap_state_t dest[3] = {
+            TAP_STATE_1FGTAP_DRAGGING_WAIT,
+            TAP_STATE_2FGTAP_DRAGGING_WAIT,
+            TAP_STATE_3FGTAP_DRAGGING_WAIT,
+        };
+        if (nfingers < 1 || nfingers > 3) break;
+        tap->state = dest[nfingers - 1];
+        break;
+    }
+    case TAP_EVENT_PALM_UP:
+        break;
+    }
 }
 
+/* libinput src/evdev-mt-touchpad-tap.c:990 */
 static void
 tp_tap_dragging2_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t time_us, int nfingers) {
-    (void)tap; (void)ti; (void)event; (void)time_us; (void)nfingers;
-    /* TODO */
+    (void)ti;
+    switch (event) {
+    case TAP_EVENT_RELEASE: {
+        static const tp_tap_state_t dest[3] = {
+            TAP_STATE_1FGTAP_DRAGGING,
+            TAP_STATE_2FGTAP_DRAGGING,
+            TAP_STATE_3FGTAP_DRAGGING,
+        };
+        if (nfingers < 1 || nfingers > 3) break;
+        tap->state = dest[nfingers - 1];
+        break;
+    }
+    case TAP_EVENT_TOUCH:
+        tap->state = TAP_STATE_DEAD;
+        tp_tap_notify(tap, time_us, nfingers, false);
+        break;
+    case TAP_EVENT_MOTION:
+    case TAP_EVENT_TIMEOUT:
+        /* noop */
+        break;
+    case TAP_EVENT_BUTTON:
+        tap->state = TAP_STATE_DEAD;
+        tp_tap_notify(tap, time_us, nfingers, false);
+        break;
+    case TAP_EVENT_THUMB:
+        break;
+    case TAP_EVENT_PALM: {
+        static const tp_tap_state_t dest[3] = {
+            TAP_STATE_1FGTAP_DRAGGING,
+            TAP_STATE_2FGTAP_DRAGGING,
+            TAP_STATE_3FGTAP_DRAGGING,
+        };
+        if (nfingers < 1 || nfingers > 3) break;
+        tap->state = dest[nfingers - 1];
+        break;
+    }
+    case TAP_EVENT_PALM_UP:
+        break;
+    }
 }
 
+/* libinput src/evdev-mt-touchpad-tap.c: tp_tap_dead_handle_event.
+   DEAD is the absorbing state for "too many fingers"; recovery is
+   simply: when all fingers have lifted, go back to IDLE. Anything else
+   is ignored. */
 static void
 tp_tap_dead_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t time_us) {
-    (void)tap; (void)ti; (void)event; (void)time_us;
-    /* TODO */
+    (void)ti; (void)time_us;
+    if (event == TAP_EVENT_RELEASE && tap->nfingers_down == 0) {
+        tap->state = TAP_STATE_IDLE;
+    }
 }
 
 /* libinput src/evdev-mt-touchpad-tap.c:1071 */
 void tp_tap_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t time_us) {
     if (!tap->enabled)
         return;
+
+#ifdef DH_DEBUG_TRACKPAD
+    tp_tap_state_t before = tap->state;
+#endif
 
     switch (tap->state) {
         case TAP_STATE_IDLE:
@@ -435,6 +887,13 @@ void tp_tap_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t 
             tp_tap_dead_handle_event(tap, ti, event, time_us);
             break;
     }
+
+#ifdef DH_DEBUG_TRACKPAD
+    if (before != tap->state) {
+        dh_debug_printf("tap: %u -> %u on %s (ti=%u t=%u)\n",
+                        before, tap->state, event_name(event), ti, time_us);
+    }
+#endif
 }
 
 #endif /* DH_TRACKPAD_TAP_TO_CLICK */

@@ -106,6 +106,7 @@ typedef struct {
     tp_tap_state_t state;
     bool           enabled;
     bool           drag_enabled;
+    bool           drag_lock_enabled;  /* keep button held through brief lifts */
 
     uint32_t       timer_us;          /* when timer fires; 0 = inactive */
     uint32_t       saved_press_us;
@@ -126,11 +127,13 @@ typedef struct {
 #define DEFAULT_DRAG_TIMEOUT_PERIOD_PERFINGER_US   20000UL  /*  20 ms */
 #define DEFAULT_DRAGLOCK_TIMEOUT_PERIOD_US        300000UL  /* 300 ms */
 
-/* DEFAULT_TAP_MOVE_THRESHOLD = 1.3 mm in libinput. Apple Magic Trackpad
-   reports in its own coordinate units (~13-bit signed range across the pad,
-   pad is ~16 cm wide). 1.3 mm is roughly 1.3/160 of pad width, applied to a
-   ~8000-unit half-range we get ~65. Squared = 4225. Tunable. */
-#define DEFAULT_TAP_MOVE_THRESHOLD_SQ              4225L
+/* libinput's threshold is 1.3 mm but libinput also applies motion smoothing
+   and frame-history filtering that we don't have. With raw frame-to-frame
+   deltas, normal finger jitter on a "still" tap easily exceeds 1.3 mm and
+   trips MOTION -> DEAD, killing legitimate taps. Bumping to ~3 mm gives us
+   a workable margin while still catching deliberate slides.
+   Magic Trackpad 2 is ~50 units/mm; 3 mm = 150 units, squared = 22500. */
+#define DEFAULT_TAP_MOVE_THRESHOLD_SQ              22500L
 
 /* Initialize a tap state machine to a clean IDLE state. Call once at boot
    or whenever the trackpad re-enumerates. */

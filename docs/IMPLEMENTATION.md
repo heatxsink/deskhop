@@ -423,9 +423,22 @@ Once Steps 2.1-2.11 are validated end-to-end:
 
 ## Path A — port libinput's tap state machine
 
+> **Status: landed (opt-in).** All 30 libinput tap states ported. Tap-to-click (1F), 2F right-click tap, 3F middle-click tap, tap-and-drag, double-tap all working. Drag-lock implemented but defaults off (matches libinput). Palm/thumb rejection and tap-disabled-while-typing intentionally deferred — both are most relevant to laptop pads, less applicable to a separate desk trackpad. Gated behind `DH_TRACKPAD_TAP_TO_CLICK` (OFF by default); default builds are byte-for-byte unchanged.
+
 Faithfully translate `src/evdev-mt-touchpad-tap.c` from [libinput](https://gitlab.freedesktop.org/libinput/libinput) into the firmware. The state machine is ~1700 lines, 30+ states, MIT licensed. Done well, this gives us tap-to-click, tap-and-drag, drag-lock, double-tap, multi-finger tap recognition, and the dozens of edge cases libinput has accumulated over a decade — without us inventing any of them.
 
-Gated behind `DH_TRACKPAD_TAP_TO_CLICK` (OFF by default). Default builds are unaffected.
+### Hard-won learning: Magic Trackpad 2 USB byte layout
+
+The contact-down condition for **Magic Trackpad 2 USB** (PID `0x0265`) is in **byte 3 mask `0xC0`, with `down = (state == 0x80)`** — *not* byte 8 mask `0xF0` with the `0x30/0x40` lifecycle that older Magic Mouse / Trackpad 1 devices use. Byte 8 holds `id (low 4 bits) | orientation (top 3 bits)`, which is easy to mistake for state because the high nibble fluctuates as orientation changes during a contact.
+
+The authoritative reference is `drivers/hid/hid-magicmouse.c` in the Linux kernel, specifically the `magicmouse_emit_touch` function's `USB_DEVICE_ID_APPLE_MAGICTRACKPAD2` branch:
+
+```c
+state = tdata[3] & 0xC0;
+down  = state == 0x80;
+```
+
+If you're touching this code: **read that function directly**, don't rely on inferences from the older devices' branches. We burned hours guessing against the wrong byte before checking the source.
 
 ### Source files to translate
 
