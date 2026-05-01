@@ -134,16 +134,20 @@ Potential usage example - I have a buggy USB dock that won't resume video from s
 
 ### Apple Magic Trackpad gestures
 
-When an Apple Magic Trackpad 2 (USB) is plugged into a deskhop host port, deskhop activates its multi-touch mode and translates gestures into standard mouse and keyboard events:
+When an Apple Magic Trackpad 2 (USB) is plugged into a deskhop host port, deskhop activates its multi-touch mode and translates contacts into standard mouse and keyboard events. The active code paths are libinput's tap and gesture state machines, ported state-by-state from `src/evdev-mt-touchpad-tap.c` and `src/evdev-mt-touchpad-gestures.c` (MIT licensed) — ten years of corner-case decisions inherited rather than reinvented.
 
-- **Cursor + physical click** — works as a regular mouse.
-- **Two-finger vertical scroll** — natural-scroll convention.
-- **Two-finger horizontal scroll** — emitted as `AC Pan` for hosts that support horizontal wheel.
-- **Three-finger horizontal swipe** — sends `Ctrl+Alt+Left/Right` (GNOME workspace shortcut on Linux). The shortcut is hardcoded for now; a config knob is on the to-do list.
+- **1-finger cursor** — sub-pixel remainder accounting for smooth slow drags.
+- **Physical click** — left button (1F at click) / right button (2F at click).
+- **2-finger scroll** — vertical and horizontal, with axis-lock once a dominant direction is established (~3 mm of motion).
+- **3-finger swipe** — `Ctrl+Alt+Left/Right` (GNOME workspace shortcut). Hardcoded for now; configurable knob is on the to-do list.
+- **Tap-to-click** — 1F tap → left, 2F tap → right, 3F tap → middle.
+- **Tap-and-drag** — tap, then immediately place finger and slide.
+- **Double-tap** — recognized by the OS (two close 1F taps).
+- **Finger-switch debounce** — brief (≤100 ms) lifts during 2F scroll / 3F swipe don't end the gesture.
 
-Tap-to-click and macOS-native gesture binding (`Mission Control`, `App Exposé`, `Force Touch`) are out of scope — those would require deskhop to spoof the Apple device descriptor, which conflicts with Linux's hid-magicmouse claiming the keyboard interface. See `docs/DESIGN.md` for the full architectural analysis.
+Native macOS gesture binding (`Mission Control`, `App Exposé`, `Force Touch`) is out of scope — that would require deskhop to spoof the Apple device descriptor, which conflicts with Linux's `hid-magicmouse` claiming the keyboard interface. See `docs/DESIGN.md` for the full architectural analysis.
 
-To disable trackpad gesture handling and treat the trackpad as a plain mouse, build with `cmake -B build -DDH_TRACKPAD_PHASE1=OFF`.
+To compile out all trackpad-specific code (the trackpad falls back to standard mouse class), build with `cmake -B build -DDH_MAGIC_TRACKPAD=OFF`.
 
 ## Hardware
 

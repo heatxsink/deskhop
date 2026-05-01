@@ -10,20 +10,17 @@ option(DH_DEBUG "Build a debug version" OFF)
 option(DH_DEBUG_CDC_FLASH "Enable CDC command to trigger bootloader mode" OFF)
 option(DH_DEBUG_TRACKPAD "Log HID descriptors and Apple HID reports for trackpad work (requires DH_DEBUG)" OFF)
 
-## Trackpad mode (single user-facing knob; expands to internal flags below).
+## Apple Magic Trackpad support.
 ##
-##   OFF   - No Magic Trackpad code. The trackpad falls back to whatever
-##           the kernel + standard mouse class give you (cursor only;
-##           no scroll, no swipes, no taps).
-##   BASIC - Phase 1 only. Hand-rolled gesture translation: cursor,
-##           2F scroll, 3F workspace swipe, physical click + drag.
-##           Matches what default builds shipped before FULL existed.
-##   FULL  - BASIC + Path A (libinput tap state machine: tap-to-click,
-##           tap-and-drag, multi-finger taps) + Path G (libinput gesture
-##           state machine: scroll axis-lock, finger-switch debounce).
-##           Default. The proven stack.
-set(DH_TRACKPAD "FULL" CACHE STRING "Magic Trackpad support level: OFF, BASIC, FULL.")
-set_property(CACHE DH_TRACKPAD PROPERTY STRINGS OFF BASIC FULL)
+## ON  - Multi-touch decode + libinput-ported gesture and tap state
+##       machines. Cursor, scroll (with axis-lock), 3F swipe, physical
+##       click, tap-to-click, tap-and-drag, multi-finger taps.
+## OFF - No trackpad-specific code. Falls back to standard mouse class.
+##
+## Default ON. There is no compile-time toggle for tap-to-click alone;
+## that's a per-user preference and belongs in flash config (runtime),
+## not the build.
+option(DH_MAGIC_TRACKPAD "Apple Magic Trackpad support" ON)
 
 ## Hardware Configuration
 set(DP_PIN_DEFAULT 14 CACHE STRING "Default USB D+ Pin Number")
@@ -152,19 +149,8 @@ if (DH_DEBUG_TRACKPAD)
   add_definitions(-DDH_DEBUG_TRACKPAD)
 endif()
 
-## Map DH_TRACKPAD mode to internal feature flags. The source code uses
-## the granular names; this is the only place that translates the
-## user-facing knob into them.
-if (DH_TRACKPAD STREQUAL "OFF")
-  # Nothing. Trackpad code compiled out; no defines added.
-elseif (DH_TRACKPAD STREQUAL "BASIC")
-  add_definitions(-DDH_TRACKPAD_PHASE1)
-elseif (DH_TRACKPAD STREQUAL "FULL")
-  add_definitions(-DDH_TRACKPAD_PHASE1)
-  add_definitions(-DDH_TRACKPAD_TAP_TO_CLICK)
-  add_definitions(-DDH_TRACKPAD_GESTURES)
-else()
-  message(FATAL_ERROR "DH_TRACKPAD must be one of: OFF, BASIC, FULL (got '${DH_TRACKPAD}').")
+if (DH_MAGIC_TRACKPAD)
+  add_definitions(-DDH_MAGIC_TRACKPAD)
 endif()
   
 target_include_directories(${binary} PUBLIC ${COMMON_INCLUDES})

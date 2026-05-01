@@ -10,7 +10,7 @@
 
 #include "magic_trackpad_tap.h"
 
-#ifdef DH_TRACKPAD_TAP_TO_CLICK
+#ifdef DH_MAGIC_TRACKPAD
 
 #include <string.h>
 
@@ -896,4 +896,4 @@ void tp_tap_handle_event(tp_tap_t *tap, uint8_t ti, tap_event_t event, uint32_t 
 #endif
 }
 
-#endif /* DH_TRACKPAD_TAP_TO_CLICK */
+#endif /* DH_MAGIC_TRACKPAD */

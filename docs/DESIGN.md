@@ -37,20 +37,23 @@ Deskhop's synthesized generic-mouse interface defeats both bind paths:
 
 ## Status
 
-**Phase 1 ships.** The `DH_TRACKPAD_PHASE1` build flag is ON by default. Default builds give Magic Trackpad users:
+**Magic Trackpad ships.** The `DH_MAGIC_TRACKPAD` build flag is ON by default — one knob, all-or-nothing. Default builds give Magic Trackpad users:
 
-- Cursor + physical click + two-finger right-click + click-drag with second finger
-- Two-finger vertical and horizontal scroll
-- Three-finger horizontal swipe → workspace switch (Ctrl+Alt+Left/Right, GNOME default)
-- Truncation-remainder accounting on slow finger movements (smooth window-resize feel)
+- 1-finger cursor motion (with sub-pixel remainder accounting for smooth slow drags)
+- Physical click → left button (1F) / right button (2F at click moment)
+- 2-finger scroll, vertical and horizontal, with axis-lock once a dominant direction is established
+- 3-finger swipe → workspace switch (Ctrl+Alt+Left/Right, GNOME default)
+- Tap-to-click (1F → left, 2F → right, 3F → middle)
+- Tap-and-drag, double-tap (recognized by the OS)
+- Brief finger-count flicker during 2F scroll / 3F swipe is debounced (≤100 ms lifts don't end the gesture)
 
-A watchdog reboot bug surfaced during Phase 1 bringup when `output_mouse_report` was called at the trackpad's native rate (~100-250 Hz). Bisection identified the call site but not the underlying cause — same call works fine for regular mice at similar rates. Pragmatic fix: the Phase 1 emit path throttles to 100 Hz with motion accumulation in between. Cursor feel is unaffected (within typical perception threshold). Root cause investigation is deferred and tracked separately.
+The active code paths are libinput's tap and gesture state machines, ported state-by-state from `src/evdev-mt-touchpad-tap.c` (tap recognition) and `src/evdev-mt-touchpad-gestures.c` (cursor/scroll/swipe). MIT licensed; we inherited ten years of corner-case decisions instead of inventing them. The earlier hand-rolled gesture state machine ("Job B" in commit history) was deleted once the libinput ports baked.
+
+A watchdog reboot bug surfaced during early bringup when `output_mouse_report` was called at the trackpad's native rate (~100-250 Hz). Bisection identified the call site but not the underlying cause — same call works fine for regular mice at similar rates. Pragmatic fix: the emit path throttles to 100 Hz with motion accumulation in between. Cursor feel is unaffected (within typical perception threshold). Root cause investigation is deferred.
 
 **Phase 2 attempted, abandoned.** We tried spoofing the Apple device descriptor so Linux's `hid-magicmouse` would bind and handle gestures natively. It worked at the binding layer but broke the keyboard: `hid-magicmouse` claims **all** HID interfaces of any Apple-VID device by design, with no per-interface filter. We tried udev rebind workarounds; Linux's `hid-generic` explicitly refuses to bind when a more-specific driver matches, so no workaround was viable. A USB hub (firmware or hardware) would solve it but is significant new work. Phase 2 source, scripts, and udev rules were reverted; design notes are kept here as a record.
 
-**Path A working, opt-in.** All 30 libinput tap states ported. Tap-to-click, 2-finger right-click tap, 3-finger middle-click tap, and tap-and-drag all work. Drag-lock is implemented but defaults off (matches libinput). Palm/thumb rejection and tap-disabled-while-typing intentionally deferred — both are most relevant to laptop pads where palms rest on the surface; less applicable to a separate desk trackpad. Path A is gated behind `DH_TRACKPAD_TAP_TO_CLICK` (OFF by default) so default builds remain unchanged.
-
-**Path G slice 1 working, opt-in.** First slice of `evdev-mt-touchpad-gestures.c` ported: NONE / UNKNOWN / POINTER_MOTION / SCROLL_START / SCROLL / SWIPE_START / SWIPE. Replaces Phase 1's hand-rolled gesture decision tree when `DH_TRACKPAD_GESTURES=ON`. Pinch, hold, hold-and-motion, 3FG-drag, and edge-scroll states intentionally deferred (out of scope on a desk trackpad with no rest-of-hand or 3FG-drag bindings).
+Deferred state-machine work (still applicable if real-world use exposes pain): drag-lock activation by default (currently off, matches libinput), palm/thumb rejection (state machine flags exist but no detector), tap-disabled-while-typing, motion smoothing (Bezier filter from libinput's `filter*.c`), pinch + hold + 3FG-drag (out of scope on a desk trackpad).
 
 The breakthrough during port: the touch state byte for Magic Trackpad 2 USB lives in **byte 3 (mask 0xC0, down = `state == 0x80`)**, not byte 8 as for older Magic Mouse / Trackpad 1. Initial guesses against an assumed byte 8 / mask 0xF0 / state values 0x30-0x40 lifecycle wasted hours. The kernel `hid-magicmouse.c` `magicmouse_emit_touch` function (`USB_DEVICE_ID_APPLE_MAGICTRACKPAD2` branch) is the authoritative reference for Magic Trackpad 2 USB byte layout — read it directly rather than relying on Magic Mouse / Trackpad 1 inferences.
 
@@ -124,15 +127,10 @@ The state machine produces standard mouse button events. Existing Phase 1 motion
 
 | Flag | Default | What it does |
 |---|---|---|
-| `DH_TRACKPAD_PHASE1` | `ON` | Apple multi-touch decode + hand-rolled gesture state machine. Translates trackpad gestures to standard mouse / keyboard events. Disable with `OFF` to fall back to plain-mouse passthrough. |
-| `DH_TRACKPAD_TAP_TO_CLICK` | `OFF` | Path A: libinput's tap state machine ported into firmware. Enables tap-to-click, tap-and-drag, drag-lock, etc. once the port lands. Mutually composable with Phase 1 — Phase 1 handles motion/scroll, Path A handles click semantics. Costs ~6-12 KB of flash. |
+| `DH_MAGIC_TRACKPAD` | `ON` | Apple Magic Trackpad support: multi-touch decode + activation + libinput-ported tap state machine + libinput-ported gesture state machine. Disable with `OFF` to compile out all trackpad-specific code; the trackpad falls back to standard mouse class. |
 | `DH_DEBUG_TRACKPAD` | `OFF` | Verbose CDC logging of HID descriptors and Apple reports. Requires `DH_DEBUG=ON`. |
-| `DH_DEBUG_TRACKPAD_LED` | `OFF` | Onboard LED toggles on every Apple-VID HID report received. No CDC required. Use for live presence diagnostics in production builds. |
-| `DH_TRACKPAD_PHASE1_SKIP_EMIT` | `OFF` | Bisect aid. With Phase 1 on, run decode + gesture but skip mouse / keyboard emit. Used to isolate the unsolved high-rate `output_mouse_report` watchdog reboot. |
-| `DH_TRACKPAD_PHASE1_NO_SCREEN_SWITCH` | `OFF` | Bisect aid. Emit mouse but skip `do_screen_switch` on edge crossings. |
-| `DH_TRACKPAD_PHASE1_NO_OUTPUT_REPORT` | `OFF` | Bisect aid. Skip the actual `output_mouse_report` call but run everything else. |
 
-Phase 2 (Apple VID/PID descriptor spoof) was attempted and reverted; no flag remains for it. See the Status section for the abandonment rationale.
+Phase 2 (Apple VID/PID descriptor spoof) was attempted and reverted; no flag remains for it. See the Status section for the abandonment rationale. Per-feature toggles for tap-to-click / drag-lock are intentionally not exposed at build time — they belong in flash config (per-user runtime preferences).
 
 ## Out of scope (deliberately)
 

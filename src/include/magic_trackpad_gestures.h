@@ -15,7 +15,7 @@
 
 #include "magic_trackpad.h"
 
-#ifdef DH_TRACKPAD_GESTURES
+#ifdef DH_MAGIC_TRACKPAD
 
 /* libinput src/evdev-mt-touchpad.h:157. State numbering preserved
    (matches libinput) so debugging side-by-side against libinput is
@@ -174,4 +174,4 @@ bool tp_gesture_post_frame(tp_gesture_t *g,
    parallel to mt_gesture_idle_tick / mt_tap_idle_tick_task. */
 void tp_gesture_idle_tick(tp_gesture_t *g, uint32_t now_us);
 
-#endif /* DH_TRACKPAD_GESTURES */
+#endif /* DH_MAGIC_TRACKPAD */

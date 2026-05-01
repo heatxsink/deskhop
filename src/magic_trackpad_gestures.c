@@ -10,7 +10,7 @@
 
 #include "magic_trackpad_gestures.h"
 
-#ifdef DH_TRACKPAD_GESTURES
+#ifdef DH_MAGIC_TRACKPAD
 
 #include <string.h>
 
@@ -588,4 +588,4 @@ void tp_gesture_idle_tick(tp_gesture_t *g, uint32_t now_us) {
     }
 }
 
-#endif /* DH_TRACKPAD_GESTURES */
+#endif /* DH_MAGIC_TRACKPAD */
