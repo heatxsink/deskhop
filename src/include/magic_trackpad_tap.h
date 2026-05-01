@@ -12,7 +12,7 @@
  *   Copyright (c) 2013-2015 Red Hat, Inc.
  *   Permission to use under MIT terms (see libinput LICENSE).
  *
- * Compile-time gated by DH_TRACKPAD_TAP_TO_CLICK; default builds do
+ * Compile-time gated by DH_MAGIC_TRACKPAD; default builds do
  * not include this state machine.
  */
 
@@ -23,7 +23,7 @@
 #include <stdbool.h>
 #include "magic_trackpad.h"
 
-#ifdef DH_TRACKPAD_TAP_TO_CLICK
+#ifdef DH_MAGIC_TRACKPAD
 
 /* libinput src/evdev-mt-touchpad.h:105 */
 typedef enum {
@@ -153,5 +153,5 @@ void tp_tap_handle_event(tp_tap_t *tap,
    directly. Appends a button event to tap->pending. */
 void tp_tap_post_button(tp_tap_t *tap, uint32_t button, bool pressed, uint32_t time_us);
 
-#endif /* DH_TRACKPAD_TAP_TO_CLICK */
+#endif /* DH_MAGIC_TRACKPAD */
 #endif /* MAGIC_TRACKPAD_TAP_H_ */

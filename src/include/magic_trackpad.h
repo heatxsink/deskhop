@@ -53,35 +53,17 @@ typedef enum {
 
 /* Per-trackpad gesture tracking. Persists across frames. */
 typedef struct {
-    int16_t  prev_x[MT_MAX_FINGERS];
-    int16_t  prev_y[MT_MAX_FINGERS];
-    uint8_t  prev_id[MT_MAX_FINGERS];
-    uint8_t  prev_count;
-    bool     have_prev;
-
-    /* 3-finger swipe accumulator. Reset whenever finger_count changes
-       away from 3. Triggers a one-shot swipe when |accum| crosses the
-       threshold. */
-    int32_t  swipe_accum_x;
-    bool     swipe_emitted;
-
-    /* Pointer-divide remainder. Slow finger motions produce per-frame
-       deltas smaller than POINTER_DIV; integer truncation would throw
-       them away. Carry the leftover into the next frame so cursor
-       motion is preserved across slow drags (window-resize feel). */
-    int32_t  pointer_rem_x;
-    int32_t  pointer_rem_y;
-
-    /* Tap state -- only present when DH_TRACKPAD_TAP_TO_CLICK is on.
-       Forward-declared via void* to keep this header agnostic of the
-       libinput-port internals. magic_trackpad.c casts it back. */
+    /* Tap state -- forward-declared via void* to keep this header
+       agnostic of the libinput-port internals. magic_trackpad.c casts
+       it back to tp_tap_t. */
     void    *tap;
 
-    /* Gesture state -- only present when DH_TRACKPAD_GESTURES is on.
-       Same void-pointer pattern as tap above. */
+    /* Gesture state -- same void-pointer pattern as tap above.
+       magic_trackpad.c casts it back to tp_gesture_t. */
     void    *gesture;
 
-    /* Track button state across frames for BUTTON event generation. */
+    /* Track physical-click state across frames so the tap state machine
+       gets a BUTTON event on rising/falling edges. */
     uint8_t  prev_button_held;
 
     /* Track when we last saw an active MT frame. The trackpad goes silent
@@ -116,7 +98,7 @@ bool mt_gesture_step(mt_gesture_state_t *s, const mt_frame_t *frame,
    long enough to imply all fingers have lifted, and dispatches TIMEOUT
    events when tap state-machine timers have expired. Returns true if
    any pending button events were enqueued -- caller drains. No-op
-   when DH_TRACKPAD_TAP_TO_CLICK is off. */
+   when DH_MAGIC_TRACKPAD is off. */
 bool mt_gesture_idle_tick(mt_gesture_state_t *s, uint32_t now_us);
 
 #endif /* MAGIC_TRACKPAD_H_ */

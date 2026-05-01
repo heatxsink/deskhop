@@ -11,7 +11,7 @@
 
 #include "main.h"
 #include "magic_trackpad.h"
-#ifdef DH_TRACKPAD_TAP_TO_CLICK
+#ifdef DH_MAGIC_TRACKPAD
 #include "magic_trackpad_tap.h"
 #endif
 
@@ -21,11 +21,11 @@ _Static_assert(MAX_DEVICES <= CFG_TUH_DEVICE_MAX,
 #define APPLE_VID          0x05AC
 #define MAGIC_TRACKPAD_PID 0x0265
 
-#ifdef DH_TRACKPAD_PHASE1
+#ifdef DH_MAGIC_TRACKPAD
 static mt_gesture_state_t mt_state;
 #endif
 
-#ifdef DH_TRACKPAD_PHASE1
+#ifdef DH_MAGIC_TRACKPAD
 /* Switches Magic Trackpad 2 USB out of mouse-emulation mode and into the
    proprietary multi-touch report format. Layout matches Linux's
    drivers/hid/hid-magicmouse.c feature_mt_trackpad2_usb.
@@ -51,7 +51,7 @@ void tuh_hid_set_report_complete_cb(uint8_t dev_addr, uint8_t instance,
     dh_debug_printf("set_report complete: dev=%u inst=%u id=%02x type=%u len=%u\n",
                     dev_addr, instance, report_id, report_type, len);
 }
-#endif /* DH_TRACKPAD_PHASE1 */
+#endif /* DH_MAGIC_TRACKPAD */
 
 #ifdef DH_DEBUG_TRACKPAD
 static void hex_dump(const char *label, const uint8_t *data, int len) {
@@ -270,7 +270,7 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
     /* Kick off the report querying */
     tuh_hid_receive_report(dev_addr, instance);
 
-#ifdef DH_TRACKPAD_PHASE1
+#ifdef DH_MAGIC_TRACKPAD
     /* Magic Trackpad: switch out of mouse-emulation mode so we get full
        multi-touch frames on Report ID 0x02. We send the activation to the
        mouse-class instance (Instance 1 in the trackpad's enumeration). */
@@ -287,9 +287,9 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
    mouse report per entry. Each entry is a button-state transition; we
    compute the resulting button bitmap by mutating global_state.mouse_buttons
    incrementally. Bypasses the 100-Hz throttle because taps are infrequent
-   and need immediate emission. No-op when DH_TRACKPAD_TAP_TO_CLICK is off. */
+   and need immediate emission. No-op when DH_MAGIC_TRACKPAD is off. */
 static void mt_tap_drain_pending(void) {
-#ifdef DH_TRACKPAD_TAP_TO_CLICK
+#ifdef DH_MAGIC_TRACKPAD
     tp_tap_t *tap = (tp_tap_t *)mt_state.tap;
     if (!tap || tap->pending_count == 0) return;
 #ifdef DH_DEBUG_TRACKPAD
@@ -323,7 +323,7 @@ static void mt_tap_drain_pending(void) {
    events. Also fires TIMEOUT events when tap timers have expired. */
 void mt_tap_idle_tick_task(device_t *state) {
     (void)state;
-#ifdef DH_TRACKPAD_PHASE1
+#ifdef DH_MAGIC_TRACKPAD
     uint32_t now_us = time_us_32();
     if (mt_gesture_idle_tick(&mt_state, now_us)) {
         mt_tap_drain_pending();
@@ -340,7 +340,7 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
 
     hid_interface_t *iface = &global_state.iface[dev_addr-1][instance];
 
-#ifdef DH_TRACKPAD_PHASE1
+#ifdef DH_MAGIC_TRACKPAD
     /* Magic Trackpad fast path: if the trackpad is in multi-touch mode the
        payload here is the proprietary frame format, not the standard mouse
        layout the descriptor advertises. Decode it ourselves and feed the
@@ -453,16 +453,6 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                 }
             }
 
-#ifdef DH_DEBUG_TRACKPAD
-            /* Per-frame visibility on 3-finger gestures, throttled to 1 in 8
-               so CDC isn't drowned. Useful when tuning the swipe threshold. */
-            static uint8_t three_finger_log_div = 0;
-            if (frame.finger_count == 3 && (++three_finger_log_div & 0x07) == 0) {
-                dh_debug_printf("3F frame: accum_x=%ld emitted=%d\n",
-                                (long)mt_state.swipe_accum_x,
-                                mt_state.swipe_emitted ? 1 : 0);
-            }
-#endif
         }
         if (consumed) {
             tuh_hid_receive_report(dev_addr, instance);
@@ -473,7 +463,7 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
            standard mouse pipeline so the user gets at least basic cursor
            movement. */
     }
-#endif /* DH_TRACKPAD_PHASE1 */
+#endif /* DH_MAGIC_TRACKPAD */
 
     /* Calculate a device index that distinguishes between different devices
        while staying within the bounds of MAX_DEVICES.
