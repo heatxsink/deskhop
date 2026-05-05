@@ -68,6 +68,10 @@ void usb_device_task(device_t *state) {
 }
 
 void usb_host_task(device_t *state) {
+#ifdef DH_PASSTHROUGH
+    extern void passthrough_tick_unmount_debounce(void);
+    passthrough_tick_unmount_debounce();
+#endif
     if (tuh_inited())
         tuh_task();
 }

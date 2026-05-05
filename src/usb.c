@@ -248,10 +248,16 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
         && iface->product_id == MAGIC_TRACKPAD_PID
         && itf_protocol == HID_ITF_PROTOCOL_MOUSE
         && global_state.trackpad_attached) {
-        extern void passthrough_clear_apple_descriptor(void);
-        passthrough_clear_apple_descriptor();
-        global_state.trackpad_attached    = false;
-        global_state.reenumerate_pending  = true;
+        /* Defer the unmount. PIO-USB on the Pico's host port drops the
+           Magic Trackpad's connection for short windows (sub-second),
+           which would otherwise cause us to immediately re-enumerate
+           the device side back to deskhop VID/PID -- visible to the
+           host PC as the trackpad disappearing every few seconds. We
+           hold off and let usb_host_task commit the unmount only if it
+           sticks. A remount within the debounce window cancels the
+           pending unmount entirely. */
+        extern uint64_t passthrough_unmount_at_us;
+        passthrough_unmount_at_us = time_us_64();
     }
 #endif
 
@@ -377,14 +383,21 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
            hid-magicmouse expects to parse, so this is the right one to
            cache. */
         extern void passthrough_cache_apple_descriptor(uint8_t const *desc, uint16_t len);
+        extern uint64_t passthrough_unmount_at_us;
+        bool was_pending_unmount = (passthrough_unmount_at_us != 0);
+        passthrough_unmount_at_us = 0;  /* cancel any pending unmount */
 #ifdef DH_DEBUG_TRACKPAD
-        dh_debug_printf("PASSTHROUGH: caching Apple HID descriptor (%u bytes)\n", desc_len);
+        dh_debug_printf("PASSTHROUGH: mount; caching Apple HID descriptor (%u bytes)%s\n",
+                        desc_len, was_pending_unmount ? " [debounce-cancel]" : "");
 #endif
         passthrough_cache_apple_descriptor(desc_report, desc_len);
         if (!global_state.trackpad_attached) {
             global_state.trackpad_attached    = true;
             global_state.reenumerate_pending  = true;
         }
+        /* If was_pending_unmount, the host PC never saw us drop the
+           trackpad -- no re-enumeration needed. */
+        (void)was_pending_unmount;
 #endif
 #ifdef DH_PATH_P
         /* Trackpad just attached. Flag for core0 to re-enumerate so the
@@ -471,24 +484,125 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
        lands -- and continues to work even if activation fails for any reason. */
     if (iface->vendor_id == APPLE_VID && iface->product_id == MAGIC_TRACKPAD_PID) {
 #ifdef DH_PASSTHROUGH
-        /* Passthrough mode: forward the trackpad's raw report bytes
-           through to the device-side host PC. The host's hid-magicmouse
-           driver decodes them natively -- we don't parse or translate.
-           First byte is the report ID, the rest is the payload (TinyUSB
-           prepends the report ID itself, so we strip it here).
-           Only forward from the mouse-class interface (the one whose
-           descriptor we cached and whose endpoint hid-magicmouse has
-           bound to). Other interfaces are ignored on the device side. */
+        /* Passthrough mode logic:
+            - Active output (trackpad-side host PC is the focused screen):
+              forward raw Apple bytes so hid-magicmouse decodes them
+              natively. ALSO run our own decode + update_mouse_position
+              on the side, so an edge-sweep can still switch outputs.
+            - Inactive output: don't forward raw bytes (they'd vanish
+              into a host PC the user isn't looking at). Instead decode
+              the frame to a mouse report and call output_mouse_report,
+              which routes it over UART to the Pico that IS active.
+              That side then re-emits as a regular mouse. The user
+              loses native gestures on the cross-output path but cursor
+              + click + scroll work, so a single trackpad still drives
+              whichever screen is active. */
+
+        /* Forward raw bytes only when this side is active. */
         if (global_state.trackpad_attached &&
             itf_protocol == HID_ITF_PROTOCOL_MOUSE &&
+            CURRENT_BOARD_IS_ACTIVE_OUTPUT &&
             len > 0) {
             uint8_t report_id = report[0];
             (void)tud_hid_n_report(0, report_id, &report[1],
                                    (uint16_t)(len - 1));
         }
-        /* Still need to ask for the next report. Skip the rest of the
-           trackpad processing block -- in passthrough mode we don't run
-           gesture / tap state machines or the legacy mouse fallback. */
+
+        /* Decode the frame to drive edge-detection (active side) or
+           UART-forward as a regular mouse (inactive side). */
+        mt_frame_t pt_frame;
+        if (itf_protocol == HID_ITF_PROTOCOL_MOUSE &&
+            mt_decode_report(report, len, &pt_frame)) {
+            static bool          pt_prev_phys_click = false;
+            static mt_button_t   pt_held_button     = MT_BTN_NONE;
+            bool phys_click_now = (report[1] & 0x01) != 0;
+            if (phys_click_now && !pt_prev_phys_click) {
+                pt_held_button = (pt_frame.finger_count >= 2)
+                                 ? MT_BTN_RIGHT : MT_BTN_LEFT;
+            } else if (!phys_click_now && pt_prev_phys_click) {
+                pt_held_button = MT_BTN_NONE;
+            }
+            pt_prev_phys_click = phys_click_now;
+
+            int32_t dx = 0, dy = 0, wheel = 0, pan = 0;
+            mt_swipe_t swipe = MT_SWIPE_NONE;
+            uint32_t now_us = time_us_32();
+            bool moved = mt_gesture_step(&mt_state, &pt_frame, pt_held_button,
+                                         now_us, &dx, &dy, &wheel, &pan, &swipe);
+            mt_tap_drain_pending();
+
+            uint8_t buttons = (uint8_t)pt_held_button;
+            bool buttons_changed = (buttons != global_state.mouse_buttons);
+
+            if ((moved || buttons_changed) && !CURRENT_BOARD_IS_ACTIVE_OUTPUT) {
+                /* Inactive output side: forward decoded mouse via UART
+                   to whichever Pico is active. update_mouse_position
+                   tracks our internal virtual cursor across screens
+                   AND triggers an output-switch on edge cross -- this
+                   is in sync with the real cursor on the active host
+                   because deskhop is the one driving that cursor on
+                   that side (via the relmouse UART path). */
+                mouse_values_t values = {
+                    .move_x  = dx,
+                    .move_y  = dy,
+                    .wheel   = wheel,
+                    .pan     = pan,
+                    .buttons = buttons,
+                };
+                enum screen_pos_e dir =
+                    update_mouse_position(&global_state, &values);
+                mouse_report_t mr =
+                    create_mouse_report(&global_state, &values);
+                output_mouse_report(&mr, &global_state);
+                global_state.mouse_buttons = buttons;
+                if (dir != NONE)
+                    do_screen_switch(&global_state, dir);
+            }
+
+            /* Active-side edge-sweep detection. We can't track the real
+               cursor (hid-magicmouse owns it), so detect a "push past
+               the trackpad's physical edge" gesture instead: a finger
+               in the outer ~10% of the trackpad surface that's moving
+               toward that edge. Apple's coordinate range is approx
+               -3678..+3934 X, so the edge zones are at around |x|>3300.
+               Per-slot state so we can compute dx between frames; 1s
+               cooldown on the trigger so a held-finger-at-edge doesn't
+               re-fire continuously. */
+            if (CURRENT_BOARD_IS_ACTIVE_OUTPUT && pt_frame.finger_count > 0) {
+                static int16_t  edge_prev_x[MT_MAX_FINGERS] = {0};
+                static bool     edge_prev_valid[MT_MAX_FINGERS] = {0};
+                static uint64_t edge_last_switch_us = 0;
+                const int16_t   EDGE_X_RIGHT_GATE = 3300;
+                const int16_t   EDGE_X_LEFT_GATE  = -3000;
+                const int16_t   EDGE_DX_GATE      = 30;
+                const uint64_t  EDGE_COOLDOWN_US  = 1000000;  /* 1 s */
+
+                uint64_t now64 = time_us_64();
+                bool may_fire = (now64 - edge_last_switch_us) > EDGE_COOLDOWN_US;
+
+                for (int i = 0; i < pt_frame.finger_count && i < MT_MAX_FINGERS; i++) {
+                    uint8_t slot = pt_frame.fingers[i].finger_id % MT_MAX_FINGERS;
+                    int16_t cur_x = pt_frame.fingers[i].x;
+
+                    if (may_fire && edge_prev_valid[slot]) {
+                        int16_t fdx = cur_x - edge_prev_x[slot];
+                        if (cur_x >  EDGE_X_RIGHT_GATE && fdx >  EDGE_DX_GATE) {
+                            do_screen_switch(&global_state, RIGHT);
+                            edge_last_switch_us = now64;
+                            break;
+                        }
+                        if (cur_x <  EDGE_X_LEFT_GATE  && fdx < -EDGE_DX_GATE) {
+                            do_screen_switch(&global_state, LEFT);
+                            edge_last_switch_us = now64;
+                            break;
+                        }
+                    }
+                    edge_prev_x[slot]     = cur_x;
+                    edge_prev_valid[slot] = true;
+                }
+            }
+        }
+
         tuh_hid_receive_report(dev_addr, instance);
         return;
 #endif

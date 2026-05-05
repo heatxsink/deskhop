@@ -513,6 +513,37 @@ bool passthrough_descriptor_ready(void) {
     return apple_hid_descriptor_len > 0;
 }
 
+/* Debounce state for trackpad mount/unmount. Set non-zero by
+   tuh_hid_umount_cb when the trackpad's mouse-class interface
+   disappears; cleared by tuh_hid_mount_cb if the trackpad reappears
+   within the window; committed by passthrough_tick_unmount_debounce
+   if the window expires without a remount. */
+uint64_t passthrough_unmount_at_us = 0;
+
+/* Once we've gone Apple-spoofed, stay Apple-spoofed until the firmware
+   reboots. PIO-USB on RP2040 drops the Magic Trackpad for arbitrary
+   sub-tens-of-seconds windows that no static debounce reliably swallows
+   (we tried 500 ms and 2 s; both bounced). Sticky mode trades the
+   ability to auto-revert to deskhop on real unplug for a stable host-
+   facing identity. The host PC sees one Apple trackpad until deskhop
+   is power-cycled, which matches the user's mental model better than
+   "the trackpad keeps disappearing for 200 ms every few seconds." */
+#define PASSTHROUGH_UNMOUNT_DEBOUNCE_US  0xFFFFFFFFFFFFFFFFULL
+
+/* Polled from usb_host_task. Commits a pending unmount only when the
+   debounce window has elapsed, so the host PC isn't subjected to a
+   re-enumeration storm every time PIO-USB blinks. */
+void passthrough_tick_unmount_debounce(void) {
+    if (passthrough_unmount_at_us == 0) return;
+    if (time_us_64() - passthrough_unmount_at_us < PASSTHROUGH_UNMOUNT_DEBOUNCE_US) return;
+    passthrough_unmount_at_us = 0;
+    if (global_state.trackpad_attached) {
+        passthrough_clear_apple_descriptor();
+        global_state.trackpad_attached    = false;
+        global_state.reenumerate_pending  = true;
+    }
+}
+
 uint8_t const *passthrough_apple_hid_descriptor(uint16_t *out_len) {
     if (out_len) *out_len = apple_hid_descriptor_len;
     return apple_hid_descriptor;
