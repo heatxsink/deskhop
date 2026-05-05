@@ -75,18 +75,16 @@
  * this header: the descriptor source-of-truth and usb_descriptors.c).
  *
  * Layout per contact (input report 0x10):
- *   1 byte: confidence (1 bit) | tip switch (1 bit) | reserved (6 bits)
- *   1 byte: contact ID (low 7 bits, range 0..127)
+ *   1 byte: tip switch (bit 0) | contact ID (bits 1..3) | pad (bits 4..7)
  *   2 bytes: X position
  *   2 bytes: Y position
- * Total per-contact: 6 bytes.
+ * Total per-contact: 5 bytes.
  *
  * After the 5 contact records:
- *   2 bytes: scan time (in 100us units)
  *   1 byte: contact count
  *   1 byte: button (BTN1)
  *
- * Total input report = 1 (report ID) + 6 * 5 + 4 = 35 bytes.
+ * Total input report = 1 (report ID) + 5 * 5 + 2 = 28 bytes.
  *
  * NOTE: This descriptor is the canonical Microsoft PTP shape but has
  * NOT been validated end-to-end against Linux/macOS/Windows yet. */
@@ -96,45 +94,47 @@
    gesture capability; this expands to 5 contacts using the same
    item shapes that worked. */
 
-/* Per-contact bytes shared across all 5 contacts. Identical structure
-   each time. Wrapped in a macro so the body lives once.
-   Includes Unit (cm) + Unit Exponent (-2) + Physical Min/Max so udev
-   computes ID_INPUT_WIDTH_MM / HEIGHT_MM correctly and libinput's
-   gesture math is calibrated to real-world distances. Without these,
-   libinput logs "no resolution or size hints" and may silently drop
-   events whose deltas don't pass its motion-noise threshold. */
+/* Per-contact bytes shared across all 5 contacts.
+   Structure mirrors the Microsoft Surface Pro Type Cover trackpad
+   (VID 045E PID 09AF), a known-good MS-PTP-certified device. Key
+   shape: Contact ID is a 3-bit field with Logical Max 5 (range 0..5,
+   covers up to 6 simultaneous contacts), with 4 bits of byte-aligning
+   padding. Earlier we had Contact ID as 8 bits with LogMax 0x7F;
+   libinput's heuristics treat that as "device claims 128 contacts"
+   and silently filter the stream. */
 #define PTP_CONTACT_BLOCK \
     0x05, 0x0D,            /* Usage Page (Digitizer)             */ \
     0x09, 0x22,            /* Usage (Finger)                     */ \
     0xA1, 0x02,            /* Collection (Logical)               */ \
-    0x09, 0x42,            /*   Usage (Tip Switch)               */ \
     0x15, 0x00,            /*   Logical Min (0)                  */ \
     0x25, 0x01,            /*   Logical Max (1)                  */ \
+    0x09, 0x42,            /*   Usage (Tip Switch)               */ \
+    0x95, 0x01,            /*   Report Count (1)                 */ \
     0x75, 0x01,            /*   Report Size (1)                  */ \
+    0x81, 0x02,            /*   Input (Tip Switch, 1 bit)        */ \
     0x95, 0x01,            /*   Report Count (1)                 */ \
-    0x81, 0x02,            /*   Input                            */ \
-    0x95, 0x07,            /*   Report Count (7)                 */ \
-    0x81, 0x03,            /*   Input padding                    */ \
+    0x75, 0x03,            /*   Report Size (3)                  */ \
+    0x25, 0x05,            /*   Logical Max (5)                  */ \
     0x09, 0x51,            /*   Usage (Contact ID)               */ \
-    0x25, 0x7F,            /*   Logical Max (127)                */ \
-    0x75, 0x08,            /*   Report Size (8)                  */ \
-    0x95, 0x01,            /*   Report Count (1)                 */ \
-    0x81, 0x02,            /*   Input                            */ \
+    0x81, 0x02,            /*   Input (Contact ID, 3 bits 0..5)  */ \
+    0x75, 0x01,            /*   Report Size (1)                  */ \
+    0x95, 0x04,            /*   Report Count (4)                 */ \
+    0x81, 0x03,            /*   Input padding (4 bits)           */ \
     0x05, 0x01,            /*   Usage Page (Generic Desktop)     */ \
-    0x09, 0x30,            /*   Usage (X)                        */ \
     0x16, 0x00, 0x00,      /*   Logical Min (0)                  */ \
     0x26, 0x80, 0x0C,      /*   Logical Max (3200)               */ \
+    0x75, 0x10,            /*   Report Size (16)                 */ \
+    0x55, 0x0E,            /*   Unit Exponent (-2 -> 0.01 cm)    */ \
+    0x65, 0x11,            /*   Unit (SI Linear * Length)        */ \
+    0x09, 0x30,            /*   Usage (X)                        */ \
     0x36, 0x00, 0x00,      /*   Physical Min (0)                 */ \
     0x46, 0x40, 0x06,      /*   Physical Max (1600 = 16.00 cm)   */ \
-    0x65, 0x11,            /*   Unit (SI Linear * Length)        */ \
-    0x55, 0x0E,            /*   Unit Exponent (-2 -> 0.01 cm)    */ \
-    0x75, 0x10,            /*   Report Size (16)                 */ \
     0x95, 0x01,            /*   Report Count (1)                 */ \
-    0x81, 0x02,            /*   Input                            */ \
-    0x09, 0x31,            /*   Usage (Y)                        */ \
-    0x26, 0xCC, 0x08,      /*   Logical Max (2252)               */ \
+    0x81, 0x02,            /*   Input (X)                        */ \
     0x46, 0x66, 0x04,      /*   Physical Max (1126 = 11.26 cm)   */ \
-    0x81, 0x02,            /*   Input                            */ \
+    0x26, 0xCC, 0x08,      /*   Logical Max (2252)               */ \
+    0x09, 0x31,            /*   Usage (Y)                        */ \
+    0x81, 0x02,            /*   Input (Y)                        */ \
     0x05, 0x0D,            /*   Usage Page (Digitizer) -- reset  */ \
     0x55, 0x00,            /*   Unit Exponent (0)                */ \
     0x65, 0x00,            /*   Unit (None)                      */ \
@@ -200,21 +200,26 @@ static const uint8_t ptp_descriptor[] = {
 
 /* Layout of a single contact in the input report. Matches the
    descriptor block PTP_CONTACT_BLOCK byte-for-byte:
-     - 1 byte: tip switch (bit 0) + 7 bits padding
-     - 1 byte: contact ID (range 0..127)
+     - 1 byte: tip switch (bit 0) + contact ID (bits 1..3) + pad
      - 2 bytes: X
      - 2 bytes: Y
-   Total: 6 bytes per contact. */
+   Total: 5 bytes per contact.
+
+   Bitfield layout: GCC on little-endian ARM places the first declared
+   bitfield in the lowest-order bits, which is what HID expects (LSB
+   first within a byte). Verify with __builtin_offsetof + a static
+   assert if a different toolchain is ever introduced. */
 typedef struct __attribute__((packed)) {
-    uint8_t  tip_switch;        /* bit 0 set = finger touching */
-    uint8_t  contact_id;        /* 0..127 */
+    uint8_t  tip_switch  : 1;   /* bit 0 set = finger touching */
+    uint8_t  contact_id  : 3;   /* 0..5 (LogMax 5 in descriptor) */
+    uint8_t  reserved    : 4;   /* padding to byte-align */
     int16_t  x;                 /* 0..PTP_LOGICAL_MAX_X */
     int16_t  y;                 /* 0..PTP_LOGICAL_MAX_Y */
 } ptp_contact_t;
 
 /* Input-report payload (excludes report ID -- TinyUSB's
    tud_hid_n_report prepends the report ID byte from its own
-   argument). Total: 5 * 6 + 1 + 1 = 32 bytes. */
+   argument). Total: 5 * 5 + 1 + 1 = 27 bytes. */
 typedef struct __attribute__((packed)) {
     ptp_contact_t contacts[PTP_MAX_CONTACTS];
     uint8_t       contact_count;              /* 0..PTP_MAX_CONTACTS */
