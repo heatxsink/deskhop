@@ -470,6 +470,28 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
        below so the trackpad behaves like a generic mouse until activation
        lands -- and continues to work even if activation fails for any reason. */
     if (iface->vendor_id == APPLE_VID && iface->product_id == MAGIC_TRACKPAD_PID) {
+#ifdef DH_PASSTHROUGH
+        /* Passthrough mode: forward the trackpad's raw report bytes
+           through to the device-side host PC. The host's hid-magicmouse
+           driver decodes them natively -- we don't parse or translate.
+           First byte is the report ID, the rest is the payload (TinyUSB
+           prepends the report ID itself, so we strip it here).
+           Only forward from the mouse-class interface (the one whose
+           descriptor we cached and whose endpoint hid-magicmouse has
+           bound to). Other interfaces are ignored on the device side. */
+        if (global_state.trackpad_attached &&
+            itf_protocol == HID_ITF_PROTOCOL_MOUSE &&
+            len > 0) {
+            uint8_t report_id = report[0];
+            (void)tud_hid_n_report(0, report_id, &report[1],
+                                   (uint16_t)(len - 1));
+        }
+        /* Still need to ask for the next report. Skip the rest of the
+           trackpad processing block -- in passthrough mode we don't run
+           gesture / tap state machines or the legacy mouse fallback. */
+        tuh_hid_receive_report(dev_addr, instance);
+        return;
+#endif
         mt_frame_t frame;
         bool consumed = false;
         if (mt_decode_report(report, len, &frame)) {
