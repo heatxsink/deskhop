@@ -70,6 +70,11 @@ const field_map_t api_field_map[] = {
     { 80, true,  UINT8,  1, offsetof(device_t, keyboard_connected) },
     { 81, true,  UINT8,  1, offsetof(device_t, switch_lock) },
     { 82, true,  UINT8,  1, offsetof(device_t, relative_mouse) },
+
+    /* Screen-lock trigger combo (global). The *emitted* lock keystroke
+       is per-output at field IDs 23/24 (output A) and 53/54 (output B). */
+    { 83, false, UINT8,  1, offsetof(device_t, config.screen_lock_trigger_modifier) },
+    { 84, false, UINT8,  1, offsetof(device_t, config.screen_lock_trigger_keycode) },
 };
 
 const field_map_t* get_field_map_entry(uint32_t index) {

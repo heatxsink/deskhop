@@ -214,6 +214,10 @@ void initial_setup(device_t *state) {
     /* Search the persistent storage sector in flash for valid config or use defaults */
     load_config(state);
 
+    /* Patch the static hotkeys[] table with runtime values from config
+       (currently just the screen-lock trigger combo). */
+    apply_runtime_hotkey_overrides(state);
+
     /* Init and enable the on-board LED GPIO as output */
     gpio_init(GPIO_LED_PIN);
     gpio_set_dir(GPIO_LED_PIN, GPIO_OUT);

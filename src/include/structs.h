@@ -79,6 +79,15 @@ typedef struct {
     uint8_t enforce_ports;
     uint16_t jump_threshold;
 
+    /* Screen-lock trigger combo: what the user presses on their
+       keyboard to fire the lock-both-screens action. The *emitted*
+       lock keystroke is per-output (output[N].lock_modifier /
+       lock_keycode). This pair is the deskhop-side trigger; it's
+       intercepted (not passed through), then the per-output emit
+       fires. Default Super+L. */
+    uint8_t screen_lock_trigger_modifier;
+    uint8_t screen_lock_trigger_keycode;
+
     output_t output[NUM_SCREENS];
     uint32_t _reserved;
 

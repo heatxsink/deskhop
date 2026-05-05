@@ -100,6 +100,7 @@ void screenlock_hotkey_handler(device_t *state, hid_keyboard_report_t *report) {
 void wipe_config_hotkey_handler(device_t *state, hid_keyboard_report_t *report) {
     wipe_config();
     load_config(state);
+    apply_runtime_hotkey_overrides(state);
     send_value(ENABLE, WIPE_CONFIG_MSG);
 }
 
@@ -237,6 +238,7 @@ void handle_flash_led_msg(uart_packet_t *packet, device_t *state) {
 void handle_wipe_config_msg(uart_packet_t *packet, device_t *state) {
     wipe_config();
     load_config(state);
+    apply_runtime_hotkey_overrides(state);
 }
 
 /* Update screensaver state after received message */
@@ -252,6 +254,9 @@ void handle_consumer_control_msg(uart_packet_t *packet, device_t *state) {
 /* Process request to store config to flash */
 void handle_save_config_msg(uart_packet_t *packet, device_t *state) {
     save_config(state);
+    /* Trigger combo may have just changed -- re-apply override so the
+       new combo is live without a reboot. */
+    apply_runtime_hotkey_overrides(state);
 }
 
 /* Process request to reboot the board */
