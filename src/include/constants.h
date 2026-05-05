@@ -22,12 +22,18 @@
  *  HID Interface Numbers
  *==============================================================================*/
 
+/* These symbols serve double duty: as USB bInterfaceNumber values in
+   the configuration descriptors AND as HID instance indices for
+   tud_hid_n_* calls. The mapping holds because TinyUSB assigns HID
+   instance indices in declaration order, and we declare HIDs in
+   numerical interface-number order. The touchpad does NOT have a
+   stable interface-number symbol here -- its position varies per
+   active configuration -- so its HID instance is computed at runtime
+   in tud_touchpad_report (and the equivalent get/set_report cbs). */
 #define ITF_NUM_HID          0
 #define ITF_NUM_HID_REL_M    1
 #define ITF_NUM_HID_VENDOR   2
 #define ITF_NUM_MSC          3
-/* CDC composite takes interfaces 4 and 5 when DH_DEBUG is on. */
-#define ITF_NUM_HID_TOUCHPAD 6  /* Path P precision touchpad (when DH_PATH_P=ON) */
 
 /*==============================================================================
  *  Mouse Modes

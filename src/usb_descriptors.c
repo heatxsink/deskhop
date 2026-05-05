@@ -114,11 +114,21 @@ bool tud_mouse_report(uint8_t mode, uint8_t buttons, int16_t x, int16_t y, int8_
 }
 
 #ifdef DH_PATH_P
-/* Send a PTP input report to the host. The HID instance index varies
-   between normal mode (touchpad is HID instance 2) and config mode
-   (instance 3); the report ID itself is the same in either mode. */
+/* Send a PTP input report to the host. The HID instance index where
+   the touchpad lives depends on which configuration descriptor is
+   currently active (see tud_hid_descriptor_report_cb above):
+     - trackpad-attached mode:  2 HID interfaces, touchpad at instance 1
+     - normal mode (no pad):    3 HID interfaces, touchpad at instance 2
+     - config mode:             4 HID interfaces, touchpad at instance 3
+   The report ID itself is the same in every mode. */
 bool tud_touchpad_report(const ptp_input_report_t *report) {
-    uint8_t hid_instance = global_state.config_mode_active ? 3 : 2;
+    uint8_t hid_instance;
+    if (global_state.trackpad_attached)
+        hid_instance = 1;
+    else if (global_state.config_mode_active)
+        hid_instance = 3;
+    else
+        hid_instance = 2;
     return tud_hid_n_report(hid_instance, PTP_REPORT_ID_TOUCH, report, sizeof(*report));
 }
 #endif
@@ -227,26 +237,43 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
 #define DH_PATH_P_DESC_LEN   0
 #endif
 
-#ifndef DH_DEBUG
-
-#define ITF_NUM_TOTAL        (2 + DH_PATH_P_ITF_COUNT)
-#define ITF_NUM_TOTAL_CONFIG (4 + DH_PATH_P_ITF_COUNT)
-#define CONFIG_TOTAL_LEN     (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN + DH_PATH_P_DESC_LEN)
-#define CONFIG_TOTAL_LEN_CFG (TUD_CONFIG_DESC_LEN + 3 * TUD_HID_DESC_LEN + TUD_MSC_DESC_LEN + DH_PATH_P_DESC_LEN)
-
-#else
-#define ITF_NUM_CDC          4
-#define ITF_NUM_TOTAL        (3 + DH_PATH_P_ITF_COUNT)
-#define ITF_NUM_TOTAL_CONFIG (5 + DH_PATH_P_ITF_COUNT)
-
-#define CONFIG_TOTAL_LEN     (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN + TUD_CDC_DESC_LEN + DH_PATH_P_DESC_LEN)
-#define CONFIG_TOTAL_LEN_CFG (TUD_CONFIG_DESC_LEN + 3 * TUD_HID_DESC_LEN + TUD_MSC_DESC_LEN + TUD_CDC_DESC_LEN + DH_PATH_P_DESC_LEN)
-
+/* CDC contributes 2 interfaces (control + data) when DH_DEBUG is on. */
+#ifdef DH_DEBUG
+#define DH_DEBUG_ITF_COUNT   2
+#define DH_DEBUG_DESC_LEN    TUD_CDC_DESC_LEN
 #define EPNUM_CDC_NOTIF      0x85
 #define EPNUM_CDC_OUT        0x06
 #define EPNUM_CDC_IN         0x86
-
+#else
+#define DH_DEBUG_ITF_COUNT   0
+#define DH_DEBUG_DESC_LEN    0
 #endif
+
+/* desc_configuration  (normal mode, no trackpad attached)
+     interfaces (in order): HID main, HID relmouse,
+                            [HID touchpad]?, [CDC ctrl, CDC data]?
+     interface numbers:     0,        1,
+                            2 (PATH_P),  next slots (DEBUG)        */
+#define ITF_NUM_TOTAL        (2 + DH_PATH_P_ITF_COUNT + DH_DEBUG_ITF_COUNT)
+#define CONFIG_TOTAL_LEN     (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN \
+                              + DH_PATH_P_DESC_LEN + DH_DEBUG_DESC_LEN)
+
+/* desc_configuration_config  (config mode)
+     interfaces (in order): HID main, HID relmouse, HID vendor,
+                            MSC, [HID touchpad]?, [CDC]?
+     interface numbers:     0, 1, 2, 3, 4, 5, 6                  */
+#define ITF_NUM_TOTAL_CONFIG (4 + DH_PATH_P_ITF_COUNT + DH_DEBUG_ITF_COUNT)
+#define CONFIG_TOTAL_LEN_CFG (TUD_CONFIG_DESC_LEN + 3 * TUD_HID_DESC_LEN + TUD_MSC_DESC_LEN \
+                              + DH_PATH_P_DESC_LEN + DH_DEBUG_DESC_LEN)
+
+/* CDC's bInterfaceNumber sits AFTER everything else in each config.
+   Values are pinned per-config so the descriptor's interface numbers
+   stay contiguous from 0..bNumInterfaces-1 (USB 2.0 spec 9.6.3). */
+#define DH_NORMAL_ITF_HID_TOUCHPAD   (2)
+#define DH_NORMAL_ITF_CDC            (2 + DH_PATH_P_ITF_COUNT)
+
+#define DH_CONFIG_ITF_HID_TOUCHPAD   (4)
+#define DH_CONFIG_ITF_CDC            (4 + DH_PATH_P_ITF_COUNT)
 
 
 uint8_t const desc_configuration[] = {
@@ -273,7 +300,7 @@ uint8_t const desc_configuration[] = {
     /* Path P precision touchpad. Reports MT contacts as PTP input
        reports; sized for a faster polling interval than the regular
        HID interfaces because gestures need low-latency updates. */
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID_TOUCHPAD,
+    TUD_HID_DESCRIPTOR(DH_NORMAL_ITF_HID_TOUCHPAD,
                        STRID_TOUCHPAD,
                        HID_ITF_PROTOCOL_NONE,
                        sizeof(ptp_descriptor),
@@ -284,7 +311,7 @@ uint8_t const desc_configuration[] = {
 #ifdef DH_DEBUG
     // Interface number, string index, EP notification address and size, EP data address (out, in) and size.
     TUD_CDC_DESCRIPTOR(
-        ITF_NUM_CDC, STRID_DEBUG, EPNUM_CDC_NOTIF, 8, EPNUM_CDC_OUT, EPNUM_CDC_IN, CFG_TUD_CDC_EP_BUFSIZE),
+        DH_NORMAL_ITF_CDC, STRID_DEBUG, EPNUM_CDC_NOTIF, 8, EPNUM_CDC_OUT, EPNUM_CDC_IN, CFG_TUD_CDC_EP_BUFSIZE),
 #endif
 };
 
@@ -323,7 +350,7 @@ uint8_t const desc_configuration_config[] = {
                        EPNUM_MSC_IN,
                        64),
 #ifdef DH_PATH_P
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID_TOUCHPAD,
+    TUD_HID_DESCRIPTOR(DH_CONFIG_ITF_HID_TOUCHPAD,
                        STRID_TOUCHPAD,
                        HID_ITF_PROTOCOL_NONE,
                        sizeof(ptp_descriptor),
@@ -334,7 +361,7 @@ uint8_t const desc_configuration_config[] = {
 #ifdef DH_DEBUG
     // Interface number, string index, EP notification address and size, EP data address (out, in) and size.
     TUD_CDC_DESCRIPTOR(
-        ITF_NUM_CDC, STRID_DEBUG, EPNUM_CDC_NOTIF, 8, EPNUM_CDC_OUT, EPNUM_CDC_IN, CFG_TUD_CDC_EP_BUFSIZE),
+        DH_CONFIG_ITF_CDC, STRID_DEBUG, EPNUM_CDC_NOTIF, 8, EPNUM_CDC_OUT, EPNUM_CDC_IN, CFG_TUD_CDC_EP_BUFSIZE),
 #endif
 };
 
@@ -344,22 +371,24 @@ uint8_t const desc_configuration_config[] = {
    and relmouse interfaces are omitted entirely so libinput sees only
    one pointer device on this seat (the touchpad), eliminating the
    dwtp-on suppression that hides the touchpad whenever a "trackpoint"
-   is present. */
-#ifndef DH_DEBUG
-#define ITF_NUM_TOTAL_TRACKPAD       2
-#define CONFIG_TOTAL_LEN_TRACKPAD    (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN)
-#else
-#define ITF_NUM_CDC_TRACKPAD         2
-#define ITF_NUM_TOTAL_TRACKPAD       3
-#define CONFIG_TOTAL_LEN_TRACKPAD    (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN + TUD_CDC_DESC_LEN)
-#endif
+   is present.
+
+   Interface numbers (contiguous, USB 2.0 9.6.3 requirement):
+     0: HID main (keyboard + consumer + system)
+     1: HID touchpad
+     2,3: CDC (control + data) when DH_DEBUG=ON */
+#define DH_TRACKPAD_ITF_HID            0
+#define DH_TRACKPAD_ITF_HID_TOUCHPAD   1
+#define DH_TRACKPAD_ITF_CDC            2
+#define ITF_NUM_TOTAL_TRACKPAD         (2 + DH_DEBUG_ITF_COUNT)
+#define CONFIG_TOTAL_LEN_TRACKPAD      (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN + DH_DEBUG_DESC_LEN)
 
 uint8_t const desc_configuration_trackpad[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL_TRACKPAD, 0, CONFIG_TOTAL_LEN_TRACKPAD,
                           TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 500),
 
     /* Main HID interface: keyboard + consumer + system (no abs mouse) */
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID,
+    TUD_HID_DESCRIPTOR(DH_TRACKPAD_ITF_HID,
                        STRID_PRODUCT,
                        HID_ITF_PROTOCOL_NONE,
                        sizeof(desc_hid_report_trackpad),
@@ -368,7 +397,7 @@ uint8_t const desc_configuration_trackpad[] = {
                        1),
 
     /* Touchpad interface */
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID_TOUCHPAD,
+    TUD_HID_DESCRIPTOR(DH_TRACKPAD_ITF_HID_TOUCHPAD,
                        STRID_TOUCHPAD,
                        HID_ITF_PROTOCOL_NONE,
                        sizeof(ptp_descriptor),
@@ -377,7 +406,7 @@ uint8_t const desc_configuration_trackpad[] = {
                        1),
 #ifdef DH_DEBUG
     TUD_CDC_DESCRIPTOR(
-        ITF_NUM_CDC_TRACKPAD, STRID_DEBUG, EPNUM_CDC_NOTIF, 8,
+        DH_TRACKPAD_ITF_CDC, STRID_DEBUG, EPNUM_CDC_NOTIF, 8,
         EPNUM_CDC_OUT, EPNUM_CDC_IN, CFG_TUD_CDC_EP_BUFSIZE),
 #endif
 };

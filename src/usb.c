@@ -92,7 +92,17 @@ uint16_t tud_hid_get_report_cb(uint8_t instance,
        The host reads these during enumeration (Max Contact Count) or
        to query current mode (Input Mode). Without these answers,
        libinput won't trust the device enough to act on its events. */
-    uint8_t touchpad_hid_instance = global_state.config_mode_active ? 3 : 2;
+    /* Touchpad's HID instance index depends on which configuration
+       descriptor is active. Trackpad-attached: only 2 HID interfaces
+       (main + touchpad), so touchpad is at instance 1. Otherwise the
+       touchpad sits after main + relmouse (and vendor in config mode). */
+    uint8_t touchpad_hid_instance;
+    if (global_state.trackpad_attached)
+        touchpad_hid_instance = 1;
+    else if (global_state.config_mode_active)
+        touchpad_hid_instance = 3;
+    else
+        touchpad_hid_instance = 2;
     if (instance == touchpad_hid_instance && report_type == HID_REPORT_TYPE_FEATURE) {
         if (report_id == PTP_REPORT_ID_FEATURE_MAX && request_len >= 1) {
             buffer[0] = PTP_MAX_CONTACTS;
@@ -127,7 +137,17 @@ void tud_hid_set_report_cb(uint8_t instance,
        independent of mode. Storing lets us answer GET_REPORT with the
        last value the host wrote, which is what libinput expects. */
     {
-        uint8_t touchpad_hid_instance = global_state.config_mode_active ? 3 : 2;
+        /* Touchpad's HID instance index depends on which configuration
+           descriptor is active. Trackpad-attached: only 2 HID interfaces
+           (main + touchpad), so touchpad is at instance 1. Otherwise the
+           touchpad sits after main + relmouse (and vendor in config mode). */
+        uint8_t touchpad_hid_instance;
+        if (global_state.trackpad_attached)
+            touchpad_hid_instance = 1;
+        else if (global_state.config_mode_active)
+            touchpad_hid_instance = 3;
+        else
+            touchpad_hid_instance = 2;
         if (instance == touchpad_hid_instance &&
             report_type == HID_REPORT_TYPE_FEATURE &&
             report_id == PTP_REPORT_ID_FEATURE_MODE &&
