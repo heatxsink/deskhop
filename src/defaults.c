@@ -65,4 +65,6 @@ const config_t default_config = {
     .hotkey_toggle = HOTKEY_TOGGLE,
     .kbd_led_as_indicator = KBD_LED_AS_INDICATOR,
     .jump_threshold = JUMP_THRESHOLD,
+    .screen_lock_trigger_modifier = KEYBOARD_MODIFIER_LEFTGUI,
+    .screen_lock_trigger_keycode  = HID_KEY_L,
 };

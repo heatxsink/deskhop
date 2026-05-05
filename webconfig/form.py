@@ -37,6 +37,22 @@ CONFIG_ = [
     FormField(73, "KBD LED as Indicator", None, {}, "uint8", "checkbox"),
 
     FormField(76, "Enforce Ports", None, {}, "uint8", "checkbox"),
+
+    FormField(1005, "Screen Lock Trigger (intercepted)", elem="label"),
+    FormField(83, "Trigger Modifier", 0x08, {
+        0x08: "Super (Linux/Win)",
+        0x09: "Ctrl + Cmd (macOS)",
+        0x05: "Ctrl + Alt",
+        0x0C: "Ctrl + Win",
+        0x06: "Shift + Alt",
+    }, "uint8"),
+    FormField(84, "Trigger Keycode", 0x0F, {
+        0x0F: "L",
+        0x14: "Q",
+        0x4C: "Delete",
+        0x29: "Escape",
+        0x16: "S",
+    }, "uint8"),
 ]
 
 OUTPUT_ = [

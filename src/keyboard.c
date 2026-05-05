@@ -153,6 +153,21 @@ hotkey_combo_t *check_all_hotkeys(hid_keyboard_report_t *report, device_t *state
     return NULL;
 }
 
+/* Apply runtime config overrides to the static hotkeys[] table. Right
+   now this is just the screen-lock trigger combo (config-driven so the
+   user can rebind via flash config / web UI). Call after load_config
+   and after any config update. */
+void apply_runtime_hotkey_overrides(device_t *state) {
+    for (int n = 0; n < ARRAY_SIZE(hotkeys); n++) {
+        if (hotkeys[n].action_handler == &screenlock_hotkey_handler) {
+            hotkeys[n].modifier  = state->config.screen_lock_trigger_modifier;
+            hotkeys[n].keys[0]   = state->config.screen_lock_trigger_keycode;
+            hotkeys[n].key_count = 1;
+            return;
+        }
+    }
+}
+
 /* ==================================================== *
  * Keyboard State Management
  * ==================================================== */
