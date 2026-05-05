@@ -13,6 +13,11 @@
 #include "magic_trackpad.h"
 #ifdef DH_PATH_P
 #include "ptp_descriptor.h"
+/* Last value the host wrote via SET_FEATURE for the Input Mode report.
+   Defaults to 3 (multi-touch) so even before the host writes, we'd
+   answer correctly if it reads first. hid-multitouch typically writes
+   3 immediately after enumeration. */
+static uint8_t ptp_input_mode = 3;
 #endif
 #ifdef DH_MAGIC_TRACKPAD
 #include "magic_trackpad_tap.h"
@@ -82,6 +87,23 @@ uint16_t tud_hid_get_report_cb(uint8_t instance,
                                hid_report_type_t report_type,
                                uint8_t *buffer,
                                uint16_t request_len) {
+#ifdef DH_PATH_P
+    /* Touchpad HID instance: Microsoft PTP feature reports.
+       The host reads these during enumeration (Max Contact Count) or
+       to query current mode (Input Mode). Without these answers,
+       libinput won't trust the device enough to act on its events. */
+    uint8_t touchpad_hid_instance = global_state.config_mode_active ? 3 : 2;
+    if (instance == touchpad_hid_instance && report_type == HID_REPORT_TYPE_FEATURE) {
+        if (report_id == PTP_REPORT_ID_FEATURE_MAX && request_len >= 1) {
+            buffer[0] = PTP_MAX_CONTACTS;
+            return 1;
+        }
+        if (report_id == PTP_REPORT_ID_FEATURE_MODE && request_len >= 1) {
+            buffer[0] = ptp_input_mode;
+            return 1;
+        }
+    }
+#endif
     return 0;
 }
 
@@ -97,6 +119,24 @@ void tud_hid_set_report_cb(uint8_t instance,
                            hid_report_type_t report_type,
                            uint8_t const *buffer,
                            uint16_t bufsize) {
+#ifdef DH_PATH_P
+    /* Touchpad HID instance: host writes the Input Mode feature
+       report to switch us between mouse-emulation (0) and multi-touch
+       (3). hid-multitouch sets it to 3 when binding. We just store
+       and ack -- our trackpad path always emits MT reports anyway,
+       independent of mode. Storing lets us answer GET_REPORT with the
+       last value the host wrote, which is what libinput expects. */
+    {
+        uint8_t touchpad_hid_instance = global_state.config_mode_active ? 3 : 2;
+        if (instance == touchpad_hid_instance &&
+            report_type == HID_REPORT_TYPE_FEATURE &&
+            report_id == PTP_REPORT_ID_FEATURE_MODE &&
+            bufsize >= 1) {
+            ptp_input_mode = buffer[0];
+            return;
+        }
+    }
+#endif
 
     /* We received a report on the config report ID */
     if (instance == ITF_NUM_HID_VENDOR && report_id == REPORT_ID_VENDOR) {

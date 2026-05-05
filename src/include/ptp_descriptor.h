@@ -53,11 +53,11 @@
 #define PTP_PHYSICAL_WIDTH_TENTHS_MM   1600  /* 16.0 cm */
 #define PTP_PHYSICAL_HEIGHT_TENTHS_MM  1150  /* 11.5 cm */
 
-/* Logical coordinate range. Picked to give roughly 1 logical unit per
-   0.01 mm at the pad's native resolution; the host will scale this to
-   pixels via the reported physical dimensions. */
+/* Logical coordinate range. 1 logical unit = 0.05 mm. Physical mapping
+   in the descriptor: X 0..3200 -> 0..16.00 cm, Y 0..2252 -> 0..11.26 cm.
+   These have to match the descriptor body byte-for-byte. */
 #define PTP_LOGICAL_MAX_X  3200
-#define PTP_LOGICAL_MAX_Y  2300
+#define PTP_LOGICAL_MAX_Y  2252
 
 /* Maximum simultaneous contacts. Magic Trackpad supports 11; libinput
    is happy with up to 5 for gesture detection on a touchpad and the
@@ -97,7 +97,12 @@
    item shapes that worked. */
 
 /* Per-contact bytes shared across all 5 contacts. Identical structure
-   each time. Wrapped in a macro so the body lives once. */
+   each time. Wrapped in a macro so the body lives once.
+   Includes Unit (cm) + Unit Exponent (-2) + Physical Min/Max so udev
+   computes ID_INPUT_WIDTH_MM / HEIGHT_MM correctly and libinput's
+   gesture math is calibrated to real-world distances. Without these,
+   libinput logs "no resolution or size hints" and may silently drop
+   events whose deltas don't pass its motion-noise threshold. */
 #define PTP_CONTACT_BLOCK \
     0x05, 0x0D,            /* Usage Page (Digitizer)             */ \
     0x09, 0x22,            /* Usage (Finger)                     */ \
@@ -117,11 +122,22 @@
     0x81, 0x02,            /*   Input                            */ \
     0x05, 0x01,            /*   Usage Page (Generic Desktop)     */ \
     0x09, 0x30,            /*   Usage (X)                        */ \
-    0x09, 0x31,            /*   Usage (Y)                        */ \
+    0x16, 0x00, 0x00,      /*   Logical Min (0)                  */ \
     0x26, 0x80, 0x0C,      /*   Logical Max (3200)               */ \
+    0x36, 0x00, 0x00,      /*   Physical Min (0)                 */ \
+    0x46, 0x40, 0x06,      /*   Physical Max (1600 = 16.00 cm)   */ \
+    0x65, 0x11,            /*   Unit (SI Linear * Length)        */ \
+    0x55, 0x0E,            /*   Unit Exponent (-2 -> 0.01 cm)    */ \
     0x75, 0x10,            /*   Report Size (16)                 */ \
-    0x95, 0x02,            /*   Report Count (2)                 */ \
+    0x95, 0x01,            /*   Report Count (1)                 */ \
     0x81, 0x02,            /*   Input                            */ \
+    0x09, 0x31,            /*   Usage (Y)                        */ \
+    0x26, 0xCC, 0x08,      /*   Logical Max (2252)               */ \
+    0x46, 0x66, 0x04,      /*   Physical Max (1126 = 11.26 cm)   */ \
+    0x81, 0x02,            /*   Input                            */ \
+    0x05, 0x0D,            /*   Usage Page (Digitizer) -- reset  */ \
+    0x55, 0x00,            /*   Unit Exponent (0)                */ \
+    0x65, 0x00,            /*   Unit (None)                      */ \
     0xC0                   /* End Collection (Logical)           */
 
 static const uint8_t ptp_descriptor[] = {
@@ -151,6 +167,33 @@ static const uint8_t ptp_descriptor[] = {
     0x81, 0x02,                  /*   Input                           */
     0x95, 0x07,                  /*   Report Count (7) padding        */
     0x81, 0x03,                  /*   Input                           */
+
+    /* ---------- Required Microsoft PTP feature reports ----------
+       Without these, libinput / hid-multitouch may silently drop
+       events because the host can't switch the device into
+       multi-touch mode. */
+
+    /* Max contact count -- read by the host during enumeration. */
+    0x05, 0x0D,                  /*   Usage Page (Digitizer)          */
+    0x09, 0x55,                  /*   Usage (Contact Count Maximum)   */
+    0x85, PTP_REPORT_ID_FEATURE_MAX,
+    0x15, 0x00,                  /*   Logical Min (0)                 */
+    0x25, 0x0F,                  /*   Logical Max (15)                */
+    0x75, 0x08,                  /*   Report Size (8)                 */
+    0x95, 0x01,                  /*   Report Count (1)                */
+    0xB1, 0x02,                  /*   Feature (Data,Var,Abs)          */
+
+    /* Input mode -- host WRITES this to switch the touchpad between
+       mouse-emulation (0) and multi-touch (3). hid-multitouch sets
+       it to 3 when binding so the device knows to send MT reports. */
+    0x06, 0x00, 0xFF,            /*   Usage Page (Vendor 0xFF00)      */
+    0x09, 0xC5,                  /*   Usage (Vendor 0xC5)             */
+    0x85, PTP_REPORT_ID_FEATURE_MODE,
+    0x15, 0x00,                  /*   Logical Min (0)                 */
+    0x25, 0xFF,                  /*   Logical Max (255)               */
+    0x75, 0x08,                  /*   Report Size (8)                 */
+    0x95, 0x01,                  /*   Report Count (1)                */
+    0xB1, 0x02,                  /*   Feature                         */
 
     0xC0                         /* End Collection                    */
 };
