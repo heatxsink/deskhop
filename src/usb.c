@@ -11,6 +11,9 @@
 
 #include "main.h"
 #include "magic_trackpad.h"
+#ifdef DH_PATH_P
+#include "ptp_descriptor.h"
+#endif
 #ifdef DH_MAGIC_TRACKPAD
 #include "magic_trackpad_tap.h"
 #endif
@@ -383,6 +386,60 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                is off. */
             mt_tap_drain_pending();
 
+#ifdef DH_PATH_P
+            /* Path P: forward the decoded multi-touch contacts as a
+               Microsoft Precision Touchpad input report. The host's
+               libinput / mutter / system drivers run their own gesture
+               state machines on this stream, exposing native trackpad
+               gestures to the user without us translating them in
+               firmware.
+
+               Slot stability matters: the kernel's hid-multitouch
+               driver tracks contacts by slot (array position) within
+               each report. If the same physical finger lands in slot 0
+               one frame and slot 2 the next (because Apple's
+               finger_id ordering shifted), the kernel sees phantom
+               begin/end transitions and never recognizes the contact.
+               We pin each Apple finger_id to a stable PTP slot via
+               `slot = id % PTP_MAX_CONTACTS`, so the same physical
+               finger always lands in the same array position.
+
+               Coordinate scale: Magic Trackpad 2 USB ranges roughly
+               -3678..+3934 X and -2478..+2587 Y per hid-magicmouse.c
+               TRACKPAD2_MIN/MAX. Rescale to PTP logical range. */
+            {
+                ptp_input_report_t ptp = {0};  /* all slots tip=0 by default */
+                int active = 0;
+                for (int i = 0; i < frame.finger_count && i < MT_MAX_FINGERS; i++) {
+                    uint8_t slot = frame.fingers[i].finger_id % PTP_MAX_CONTACTS;
+                    int32_t mx = (int32_t)frame.fingers[i].x + 3678;
+                    int32_t my = (int32_t)frame.fingers[i].y + 2478;
+                    int32_t px = mx * PTP_LOGICAL_MAX_X / (3678 + 3934);
+                    int32_t py = my * PTP_LOGICAL_MAX_Y / (2478 + 2587);
+                    if (px < 0) px = 0;
+                    if (px > PTP_LOGICAL_MAX_X) px = PTP_LOGICAL_MAX_X;
+                    if (py < 0) py = 0;
+                    if (py > PTP_LOGICAL_MAX_Y) py = PTP_LOGICAL_MAX_Y;
+                    ptp.contacts[slot].tip_switch = 1;
+                    ptp.contacts[slot].contact_id = frame.fingers[i].finger_id;
+                    ptp.contacts[slot].x          = (int16_t)px;
+                    ptp.contacts[slot].y          = (int16_t)py;
+                    active++;
+                }
+                ptp.contact_count = (uint8_t)active;
+                ptp.buttons       = phys_click_now ? 0x01 : 0x00;
+                tud_touchpad_report(&ptp);
+            }
+#endif
+
+            /* Mouse-emit path. With Path P (precision touchpad descriptor)
+               we ALSO send PTP reports above; this mouse-emit is kept
+               on as a fallback so the cursor still moves while we
+               investigate why libinput silently drops the PTP stream
+               (the kernel parses it cleanly but libinput won't act on
+               it -- separate work item). When the libinput side is
+               sorted, this path becomes redundant under DH_PATH_P. */
+
             /* What we report to the host: the translated button (which
                persists for the duration of the held click), not the raw
                trackpad bit. */
@@ -452,7 +509,6 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                     queue_packet((uint8_t *)&release, KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
                 }
             }
-
         }
         if (consumed) {
             tuh_hid_receive_report(dev_addr, instance);

@@ -67,40 +67,114 @@
 
 /* The PTP HID report descriptor.
  *
- * Layout per contact (for input report 0x10):
- *   1 byte: confidence (1 bit) | tip switch (1 bit) | contact ID (4 bits) | reserved (2 bits)
+ * Defined inline in this header as `static const` so its size
+ * (sizeof(ptp_descriptor)) is a compile-time constant at every TU that
+ * includes it. The USB descriptor macros (TUD_HID_DESCRIPTOR) need the
+ * length as a compile-time integer, which an extern declaration would
+ * not give us. The flash duplication is small (only two TUs include
+ * this header: the descriptor source-of-truth and usb_descriptors.c).
+ *
+ * Layout per contact (input report 0x10):
+ *   1 byte: confidence (1 bit) | tip switch (1 bit) | reserved (6 bits)
+ *   1 byte: contact ID (low 7 bits, range 0..127)
  *   2 bytes: X position
  *   2 bytes: Y position
+ * Total per-contact: 6 bytes.
  *
- * After the contact array:
+ * After the 5 contact records:
  *   2 bytes: scan time (in 100us units)
  *   1 byte: contact count
  *   1 byte: button (BTN1)
  *
- * Total input report = 1 (report ID) + 5 * MAX_CONTACTS + 4 = 30 bytes.
+ * Total input report = 1 (report ID) + 6 * 5 + 4 = 35 bytes.
  *
  * NOTE: This descriptor is the canonical Microsoft PTP shape but has
- * NOT been validated end-to-end against Linux/macOS/Windows yet. It's
- * the Step P.1 deliverable -- bytes on disk, ready for review.
- */
-extern const uint8_t ptp_descriptor[];
-extern const uint16_t ptp_descriptor_len;
+ * NOT been validated end-to-end against Linux/macOS/Windows yet. */
+/* PTP descriptor — 5 contacts, no feature reports yet (Step P.3
+   minimal). The single-contact version of this descriptor was
+   validated to bind to hid-multitouch on Linux as a touchpad with
+   gesture capability; this expands to 5 contacts using the same
+   item shapes that worked. */
+
+/* Per-contact bytes shared across all 5 contacts. Identical structure
+   each time. Wrapped in a macro so the body lives once. */
+#define PTP_CONTACT_BLOCK \
+    0x05, 0x0D,            /* Usage Page (Digitizer)             */ \
+    0x09, 0x22,            /* Usage (Finger)                     */ \
+    0xA1, 0x02,            /* Collection (Logical)               */ \
+    0x09, 0x42,            /*   Usage (Tip Switch)               */ \
+    0x15, 0x00,            /*   Logical Min (0)                  */ \
+    0x25, 0x01,            /*   Logical Max (1)                  */ \
+    0x75, 0x01,            /*   Report Size (1)                  */ \
+    0x95, 0x01,            /*   Report Count (1)                 */ \
+    0x81, 0x02,            /*   Input                            */ \
+    0x95, 0x07,            /*   Report Count (7)                 */ \
+    0x81, 0x03,            /*   Input padding                    */ \
+    0x09, 0x51,            /*   Usage (Contact ID)               */ \
+    0x25, 0x7F,            /*   Logical Max (127)                */ \
+    0x75, 0x08,            /*   Report Size (8)                  */ \
+    0x95, 0x01,            /*   Report Count (1)                 */ \
+    0x81, 0x02,            /*   Input                            */ \
+    0x05, 0x01,            /*   Usage Page (Generic Desktop)     */ \
+    0x09, 0x30,            /*   Usage (X)                        */ \
+    0x09, 0x31,            /*   Usage (Y)                        */ \
+    0x26, 0x80, 0x0C,      /*   Logical Max (3200)               */ \
+    0x75, 0x10,            /*   Report Size (16)                 */ \
+    0x95, 0x02,            /*   Report Count (2)                 */ \
+    0x81, 0x02,            /*   Input                            */ \
+    0xC0                   /* End Collection (Logical)           */
+
+static const uint8_t ptp_descriptor[] = {
+    0x05, 0x0D,                  /* Usage Page (Digitizer)            */
+    0x09, 0x05,                  /* Usage (Touch Pad)                 */
+    0xA1, 0x01,                  /* Collection (Application)          */
+    0x85, PTP_REPORT_ID_TOUCH,   /*   Report ID                       */
+
+    PTP_CONTACT_BLOCK,           /* Contact 0 */
+    PTP_CONTACT_BLOCK,           /* Contact 1 */
+    PTP_CONTACT_BLOCK,           /* Contact 2 */
+    PTP_CONTACT_BLOCK,           /* Contact 3 */
+    PTP_CONTACT_BLOCK,           /* Contact 4 */
+
+    0x05, 0x0D,                  /*   Usage Page (Digitizer)          */
+    0x09, 0x54,                  /*   Usage (Contact Count)           */
+    0x25, PTP_MAX_CONTACTS,      /*   Logical Max (5)                 */
+    0x75, 0x08,                  /*   Report Size (8)                 */
+    0x95, 0x01,                  /*   Report Count (1)                */
+    0x81, 0x02,                  /*   Input                           */
+
+    0x05, 0x09,                  /*   Usage Page (Button)             */
+    0x09, 0x01,                  /*   Usage (Button 1)                */
+    0x25, 0x01,                  /*   Logical Max (1)                 */
+    0x75, 0x01,                  /*   Report Size (1)                 */
+    0x95, 0x01,                  /*   Report Count (1)                */
+    0x81, 0x02,                  /*   Input                           */
+    0x95, 0x07,                  /*   Report Count (7) padding        */
+    0x81, 0x03,                  /*   Input                           */
+
+    0xC0                         /* End Collection                    */
+};
 
 /* Layout of a single contact in the input report. Matches the
-   descriptor above byte-for-byte. */
+   descriptor block PTP_CONTACT_BLOCK byte-for-byte:
+     - 1 byte: tip switch (bit 0) + 7 bits padding
+     - 1 byte: contact ID (range 0..127)
+     - 2 bytes: X
+     - 2 bytes: Y
+   Total: 6 bytes per contact. */
 typedef struct __attribute__((packed)) {
-    uint8_t  confidence_tip_id; /* bit 0 = confidence, bit 1 = tip, bits 2-5 = contact ID */
-    int16_t  x;
-    int16_t  y;
+    uint8_t  tip_switch;        /* bit 0 set = finger touching */
+    uint8_t  contact_id;        /* 0..127 */
+    int16_t  x;                 /* 0..PTP_LOGICAL_MAX_X */
+    int16_t  y;                 /* 0..PTP_LOGICAL_MAX_Y */
 } ptp_contact_t;
 
-/* Full input report structure. Sent on every multi-touch frame change
-   while in PTP mode. */
+/* Input-report payload (excludes report ID -- TinyUSB's
+   tud_hid_n_report prepends the report ID byte from its own
+   argument). Total: 5 * 6 + 1 + 1 = 32 bytes. */
 typedef struct __attribute__((packed)) {
-    uint8_t       report_id;                  /* PTP_REPORT_ID_TOUCH */
     ptp_contact_t contacts[PTP_MAX_CONTACTS];
-    uint16_t      scan_time;                  /* 100us units */
-    uint8_t       contact_count;              /* number of valid contacts in this report */
+    uint8_t       contact_count;              /* 0..PTP_MAX_CONTACTS */
     uint8_t       buttons;                    /* bit 0 = BTN1 (clickpad press) */
 } ptp_input_report_t;
 
@@ -118,5 +192,11 @@ typedef struct __attribute__((packed)) {
     uint8_t report_id;                        /* PTP_REPORT_ID_FEATURE_MODE */
     uint8_t mode;                             /* 0 = mouse, 3 = multi-touch */
 } ptp_feature_mode_t;
+
+/* Send a PTP input report through the touchpad HID interface.
+   Returns true if queued for transmission, false if the endpoint
+   was busy. Defined in usb_descriptors.c. */
+#include <stdbool.h>
+bool tud_touchpad_report(const ptp_input_report_t *report);
 
 #endif /* DH_PATH_P */

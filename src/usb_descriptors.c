@@ -12,6 +12,9 @@
 #include "usb_descriptors.h"
 #include "main.h"
 #include "tusb.h"
+#ifdef DH_PATH_P
+#include "ptp_descriptor.h"
+#endif
 
 //--------------------------------------------------------------------+
 // Device Descriptors
@@ -57,6 +60,19 @@ uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
         if (instance == ITF_NUM_HID_VENDOR)
             return desc_hid_report_vendor;
 
+#ifdef DH_PATH_P
+    /* HID instance index (the order this interface appears in
+       desc_configuration / desc_configuration_config among HID
+       interfaces) -- NOT the USB interface number. Touchpad is the
+       3rd HID interface in normal mode (instance 2) and the 4th in
+       config mode (instance 3). The USB interface number itself is 6
+       (a deliberate gap to keep CDC at 4-5), but TinyUSB's callback
+       receives the HID-instance order. */
+    uint8_t touchpad_hid_instance = global_state.config_mode_active ? 3 : 2;
+    if (instance == touchpad_hid_instance)
+        return ptp_descriptor;
+#endif
+
     switch(instance) {
         case ITF_NUM_HID:
             return desc_hid_report;
@@ -80,6 +96,16 @@ bool tud_mouse_report(uint8_t mode, uint8_t buttons, int16_t x, int16_t y, int8_
     return tud_hid_n_report(instance, report_id, &report, sizeof(report));
 }
 
+#ifdef DH_PATH_P
+/* Send a PTP input report to the host. The HID instance index varies
+   between normal mode (touchpad is HID instance 2) and config mode
+   (instance 3); the report ID itself is the same in either mode. */
+bool tud_touchpad_report(const ptp_input_report_t *report) {
+    uint8_t hid_instance = global_state.config_mode_active ? 3 : 2;
+    return tud_hid_n_report(hid_instance, PTP_REPORT_ID_TOUCH, report, sizeof(*report));
+}
+#endif
+
 
 //--------------------------------------------------------------------+
 // String Descriptors
@@ -97,6 +123,9 @@ char const *string_desc_arr[] = {
 #ifdef DH_DEBUG
     "DeskHop Debug",            // 7: Debug Interface
 #endif
+#ifdef DH_PATH_P
+    "DeskHop Trackpad",         // 8: Path P precision touchpad
+#endif
 };
 
 // String Descriptor Index
@@ -109,6 +138,7 @@ enum {
     STRID_VENDOR,
     STRID_DISK,
     STRID_DEBUG,
+    STRID_TOUCHPAD,
 };
 
 static uint16_t _desc_str[32];
@@ -161,31 +191,43 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
 // Configuration Descriptor
 //--------------------------------------------------------------------+
 
-#define EPNUM_HID        0x81
-#define EPNUM_HID_REL_M  0x82
-#define EPNUM_HID_VENDOR 0x83
+#define EPNUM_HID          0x81
+#define EPNUM_HID_REL_M    0x82
+#define EPNUM_HID_VENDOR   0x83
 
-#define EPNUM_MSC_OUT    0x04
-#define EPNUM_MSC_IN     0x84
+#define EPNUM_MSC_OUT      0x04
+#define EPNUM_MSC_IN       0x84
+
+#define EPNUM_HID_TOUCHPAD 0x87  /* Path P precision touchpad input */
+
+/* Path P adds one HID interface (touchpad) to both configurations.
+   When DH_PATH_P is off, these expand to 0 / nothing. */
+#ifdef DH_PATH_P
+#define DH_PATH_P_ITF_COUNT  1
+#define DH_PATH_P_DESC_LEN   TUD_HID_DESC_LEN
+#else
+#define DH_PATH_P_ITF_COUNT  0
+#define DH_PATH_P_DESC_LEN   0
+#endif
 
 #ifndef DH_DEBUG
 
-#define ITF_NUM_TOTAL 2
-#define ITF_NUM_TOTAL_CONFIG 4
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN)
-#define CONFIG_TOTAL_LEN_CFG (TUD_CONFIG_DESC_LEN + 3 * TUD_HID_DESC_LEN + TUD_MSC_DESC_LEN)
+#define ITF_NUM_TOTAL        (2 + DH_PATH_P_ITF_COUNT)
+#define ITF_NUM_TOTAL_CONFIG (4 + DH_PATH_P_ITF_COUNT)
+#define CONFIG_TOTAL_LEN     (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN + DH_PATH_P_DESC_LEN)
+#define CONFIG_TOTAL_LEN_CFG (TUD_CONFIG_DESC_LEN + 3 * TUD_HID_DESC_LEN + TUD_MSC_DESC_LEN + DH_PATH_P_DESC_LEN)
 
 #else
-#define ITF_NUM_CDC 4
-#define ITF_NUM_TOTAL 3
-#define ITF_NUM_TOTAL_CONFIG 5
+#define ITF_NUM_CDC          4
+#define ITF_NUM_TOTAL        (3 + DH_PATH_P_ITF_COUNT)
+#define ITF_NUM_TOTAL_CONFIG (5 + DH_PATH_P_ITF_COUNT)
 
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN + TUD_CDC_DESC_LEN)
-#define CONFIG_TOTAL_LEN_CFG (TUD_CONFIG_DESC_LEN + 3 * TUD_HID_DESC_LEN + TUD_MSC_DESC_LEN + TUD_CDC_DESC_LEN)
+#define CONFIG_TOTAL_LEN     (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN + TUD_CDC_DESC_LEN + DH_PATH_P_DESC_LEN)
+#define CONFIG_TOTAL_LEN_CFG (TUD_CONFIG_DESC_LEN + 3 * TUD_HID_DESC_LEN + TUD_MSC_DESC_LEN + TUD_CDC_DESC_LEN + DH_PATH_P_DESC_LEN)
 
-#define EPNUM_CDC_NOTIF  0x85
-#define EPNUM_CDC_OUT    0x06
-#define EPNUM_CDC_IN     0x86
+#define EPNUM_CDC_NOTIF      0x85
+#define EPNUM_CDC_OUT        0x06
+#define EPNUM_CDC_IN         0x86
 
 #endif
 
@@ -210,6 +252,18 @@ uint8_t const desc_configuration[] = {
                        EPNUM_HID_REL_M,
                        CFG_TUD_HID_EP_BUFSIZE,
                        1),
+#ifdef DH_PATH_P
+    /* Path P precision touchpad. Reports MT contacts as PTP input
+       reports; sized for a faster polling interval than the regular
+       HID interfaces because gestures need low-latency updates. */
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_TOUCHPAD,
+                       STRID_TOUCHPAD,
+                       HID_ITF_PROTOCOL_NONE,
+                       sizeof(ptp_descriptor),
+                       EPNUM_HID_TOUCHPAD,
+                       CFG_TUD_HID_EP_BUFSIZE,
+                       1),
+#endif
 #ifdef DH_DEBUG
     // Interface number, string index, EP notification address and size, EP data address (out, in) and size.
     TUD_CDC_DESCRIPTOR(
@@ -251,6 +305,15 @@ uint8_t const desc_configuration_config[] = {
                        EPNUM_MSC_OUT,
                        EPNUM_MSC_IN,
                        64),
+#ifdef DH_PATH_P
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_TOUCHPAD,
+                       STRID_TOUCHPAD,
+                       HID_ITF_PROTOCOL_NONE,
+                       sizeof(ptp_descriptor),
+                       EPNUM_HID_TOUCHPAD,
+                       CFG_TUD_HID_EP_BUFSIZE,
+                       1),
+#endif
 #ifdef DH_DEBUG
     // Interface number, string index, EP notification address and size, EP data address (out, in) and size.
     TUD_CDC_DESCRIPTOR(

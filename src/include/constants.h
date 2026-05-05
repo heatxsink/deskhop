@@ -22,10 +22,12 @@
  *  HID Interface Numbers
  *==============================================================================*/
 
-#define ITF_NUM_HID        0
-#define ITF_NUM_HID_REL_M  1
-#define ITF_NUM_HID_VENDOR 2
-#define ITF_NUM_MSC        3
+#define ITF_NUM_HID          0
+#define ITF_NUM_HID_REL_M    1
+#define ITF_NUM_HID_VENDOR   2
+#define ITF_NUM_MSC          3
+/* CDC composite takes interfaces 4 and 5 when DH_DEBUG is on. */
+#define ITF_NUM_HID_TOUCHPAD 6  /* Path P precision touchpad (when DH_PATH_P=ON) */
 
 /*==============================================================================
  *  Mouse Modes
