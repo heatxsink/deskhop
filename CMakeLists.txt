@@ -21,6 +21,7 @@ option(DH_DEBUG_TRACKPAD "Log HID descriptors and Apple HID reports for trackpad
 ## that's a per-user preference and belongs in flash config (runtime),
 ## not the build.
 option(DH_MAGIC_TRACKPAD "Apple Magic Trackpad support" ON)
+option(DH_PATH_P "Path P: Microsoft Precision Touchpad descriptor + native gesture passthrough. OFF by default; experimental, see docs/PATH_P_DESIGN.md." OFF)
 
 ## Hardware Configuration
 set(DP_PIN_DEFAULT 14 CACHE STRING "Default USB D+ Pin Number")
@@ -86,6 +87,7 @@ set(COMMON_SOURCES
   ${SRC_DIR}/magic_trackpad.c
   ${SRC_DIR}/magic_trackpad_tap.c
   ${SRC_DIR}/magic_trackpad_gestures.c
+  ${SRC_DIR}/ptp_descriptor.c
   ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/dcd_pio_usb.c
   ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
 )
@@ -151,6 +153,13 @@ endif()
 
 if (DH_MAGIC_TRACKPAD)
   add_definitions(-DDH_MAGIC_TRACKPAD)
+endif()
+
+if (DH_PATH_P)
+  if (NOT DH_MAGIC_TRACKPAD)
+    message(FATAL_ERROR "DH_PATH_P requires DH_MAGIC_TRACKPAD=ON (PTP report path consumes the multi-touch decoder).")
+  endif()
+  add_definitions(-DDH_PATH_P)
 endif()
   
 target_include_directories(${binary} PUBLIC ${COMMON_INCLUDES})
