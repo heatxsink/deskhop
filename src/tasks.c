@@ -45,7 +45,7 @@ void kick_watchdog_task(device_t *state) {
  * ================================================== */
 
 void usb_device_task(device_t *state) {
-#ifdef DH_PATH_P
+#if defined(DH_PATH_P) || defined(DH_PASSTHROUGH)
     /* Re-enumeration trigger from the host-side mount/unmount callbacks
        on core1. Setting reenumerate_pending = true asks core0 to drop
        the device-side USB pull-up briefly so the host re-scans our
@@ -56,7 +56,7 @@ void usb_device_task(device_t *state) {
         state->reenumerate_pending = false;
 #ifdef DH_DEBUG_TRACKPAD
         extern int dh_debug_printf(const char *__restrict __format, ...);
-        dh_debug_printf("PATH_P: re-enumerating, trackpad_attached=%u\n",
+        dh_debug_printf("re-enumerating, trackpad_attached=%u\n",
                         state->trackpad_attached ? 1 : 0);
 #endif
         tud_disconnect();

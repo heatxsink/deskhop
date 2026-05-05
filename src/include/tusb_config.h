@@ -121,7 +121,8 @@ extern int dh_debug_printf(const char *__restrict __format, ...);
 
 // Enable HID (Human Interface Device) class (keyboard, mouse, etc.).
 // 3 base instances (HID, relmouse, vendor); +1 when DH_PATH_P adds the
-// precision touchpad interface.
+// precision touchpad interface. Passthrough mode reuses instance 0
+// for the trackpad's own descriptor and doesn't add an instance.
 #ifdef DH_PATH_P
 #define CFG_TUD_HID    4
 #else
@@ -142,7 +143,7 @@ extern int dh_debug_printf(const char *__restrict __format, ...);
 // 4 scan/count/button), so we bump to 64 -- the standard full-speed
 // interrupt-EP max -- when DH_PATH_P is on. Other interfaces don't
 // suffer because each EP is sized independently per its descriptor.
-#ifdef DH_PATH_P
+#if defined(DH_PATH_P) || defined(DH_PASSTHROUGH)
 #define CFG_TUD_HID_EP_BUFSIZE 64
 #else
 #define CFG_TUD_HID_EP_BUFSIZE 32

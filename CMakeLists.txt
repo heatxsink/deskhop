@@ -23,6 +23,13 @@ option(DH_DEBUG_TRACKPAD "Log HID descriptors and Apple HID reports for trackpad
 option(DH_MAGIC_TRACKPAD "Apple Magic Trackpad support" ON)
 option(DH_PATH_P "Path P: Microsoft Precision Touchpad descriptor + native gesture passthrough. OFF by default; experimental, see docs/PATH_P_DESIGN.md." OFF)
 
+## Passthrough: re-emit the Apple Magic Trackpad's own HID descriptor
+## with Apple's VID/PID. Linux/macOS hosts then bind hid-magicmouse
+## natively; gestures/quirks are handled by the kernel driver. Mutually
+## exclusive with DH_PATH_P. Linux/macOS only at this stage; Windows
+## has no native Apple driver and would need PTP fallback (future).
+option(DH_PASSTHROUGH "Apple Magic Trackpad USB passthrough mode (Linux/macOS only)" OFF)
+
 ## Hardware Configuration
 set(DP_PIN_DEFAULT 14 CACHE STRING "Default USB D+ Pin Number")
 set(PIO_USE_TINYUSB 1 CACHE STRING "Make TinyUSB Manage the PIO USB Port")
@@ -159,6 +166,16 @@ if (DH_PATH_P)
     message(FATAL_ERROR "DH_PATH_P requires DH_MAGIC_TRACKPAD=ON (PTP report path consumes the multi-touch decoder).")
   endif()
   add_definitions(-DDH_PATH_P)
+endif()
+
+if (DH_PASSTHROUGH)
+  if (DH_PATH_P)
+    message(FATAL_ERROR "DH_PASSTHROUGH and DH_PATH_P are mutually exclusive (different device-side descriptors).")
+  endif()
+  if (NOT DH_MAGIC_TRACKPAD)
+    message(FATAL_ERROR "DH_PASSTHROUGH requires DH_MAGIC_TRACKPAD=ON (need the trackpad mount/activation hooks).")
+  endif()
+  add_definitions(-DDH_PASSTHROUGH)
 endif()
   
 target_include_directories(${binary} PUBLIC ${COMMON_INCLUDES})

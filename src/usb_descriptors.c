@@ -26,9 +26,25 @@ tusb_desc_device_t const desc_device_config = DEVICE_DESCRIPTOR(0x2e8a, 0x107c);
                                         // https://pid.codes/1209/C000/
 tusb_desc_device_t const desc_device = DEVICE_DESCRIPTOR(0x1209, 0xc000);
 
+#ifdef DH_PASSTHROUGH
+/* Apple Inc. / Magic Trackpad 2 USB. Spoofed when DH_PASSTHROUGH is on
+   and a Magic Trackpad is attached on the host port -- so the host PC's
+   hid-magicmouse driver claims the device by VID/PID match. */
+tusb_desc_device_t const desc_device_apple = DEVICE_DESCRIPTOR(0x05ac, 0x0265);
+
+/* Forward declarations for passthrough helpers defined later in this
+   file. The callbacks above need them before their definition. */
+bool          passthrough_descriptor_ready(void);
+uint8_t const *passthrough_apple_hid_descriptor(uint16_t *out_len);
+#endif
+
 // Invoked when received GET DEVICE DESCRIPTOR
 // Application return pointer to descriptor
 uint8_t const *tud_descriptor_device_cb(void) {
+#ifdef DH_PASSTHROUGH
+    if (global_state.trackpad_attached)
+        return (uint8_t const *)&desc_device_apple;
+#endif
     if (global_state.config_mode_active)
         return (uint8_t const *)&desc_device_config;
     else
@@ -71,6 +87,16 @@ uint8_t const desc_hid_report_vendor[] = {TUD_HID_REPORT_DESC_VENDOR_CTRL(HID_RE
 // Application return pointer to descriptor
 // Descriptor contents must exist long enough for transfer to complete
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
+#ifdef DH_PASSTHROUGH
+    /* Passthrough: only one HID interface (instance 0) and we serve
+       the trackpad's own report descriptor verbatim. */
+    if (global_state.trackpad_attached && passthrough_descriptor_ready()) {
+        if (instance == 0)
+            return passthrough_apple_hid_descriptor(NULL);
+        return desc_hid_report;  /* should be unreachable */
+    }
+#endif
+
     if (global_state.config_mode_active)
         if (instance == ITF_NUM_HID_VENDOR)
             return desc_hid_report_vendor;
@@ -412,8 +438,97 @@ uint8_t const desc_configuration_trackpad[] = {
 };
 #endif /* DH_PATH_P */
 
+#ifdef DH_PASSTHROUGH
+/* Passthrough mode: store the trackpad's HID descriptor on host-port
+   mount and re-emit it on our device port so the host PC's
+   hid-magicmouse claims us by VID/PID match.
+
+   Layout (single HID interface, no CDC, no other interfaces):
+     [0..8]   configuration descriptor (9 bytes)
+     [9..17]  interface descriptor      (9 bytes)
+     [18..26] HID class descriptor      (9 bytes, includes report length)
+     [27..33] endpoint descriptor       (7 bytes)
+     total: 34 bytes
+
+   Built once on mount and held in static RAM. Cleared on unmount. */
+#define APPLE_HID_DESC_MAX        1024
+#define PASSTHROUGH_CONFIG_LEN    (9 + 9 + 9 + 7)
+
+static uint8_t  apple_hid_descriptor[APPLE_HID_DESC_MAX];
+static uint16_t apple_hid_descriptor_len = 0;
+static uint8_t  passthrough_config_descriptor[PASSTHROUGH_CONFIG_LEN];
+
+void passthrough_cache_apple_descriptor(uint8_t const *desc, uint16_t len) {
+    if (len == 0 || len > APPLE_HID_DESC_MAX) return;
+    memcpy(apple_hid_descriptor, desc, len);
+    apple_hid_descriptor_len = len;
+
+    uint8_t *p = passthrough_config_descriptor;
+    uint16_t total_len = PASSTHROUGH_CONFIG_LEN;
+
+    /* Configuration descriptor (USB 2.0 9.6.3) */
+    *p++ = 9; *p++ = TUSB_DESC_CONFIGURATION;
+    *p++ = (uint8_t)(total_len & 0xFF);
+    *p++ = (uint8_t)(total_len >> 8);
+    *p++ = 1;     /* bNumInterfaces */
+    *p++ = 1;     /* bConfigurationValue */
+    *p++ = 0;     /* iConfiguration */
+    *p++ = TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP | 0x80;
+    *p++ = 250;   /* bMaxPower (500 mA / 2) */
+
+    /* Interface descriptor */
+    *p++ = 9; *p++ = TUSB_DESC_INTERFACE;
+    *p++ = 0;     /* bInterfaceNumber */
+    *p++ = 0;     /* bAlternateSetting */
+    *p++ = 1;     /* bNumEndpoints */
+    *p++ = TUSB_CLASS_HID;
+    *p++ = 0;     /* bInterfaceSubClass: no boot */
+    *p++ = 0;     /* bInterfaceProtocol: none */
+    *p++ = 0;     /* iInterface */
+
+    /* HID class descriptor (HID 1.11 6.2.1) */
+    *p++ = 9; *p++ = HID_DESC_TYPE_HID;
+    *p++ = 0x11; *p++ = 0x01;          /* bcdHID 1.11 */
+    *p++ = 0;                           /* bCountryCode */
+    *p++ = 1;                           /* bNumDescriptors */
+    *p++ = HID_DESC_TYPE_REPORT;
+    *p++ = (uint8_t)(apple_hid_descriptor_len & 0xFF);
+    *p++ = (uint8_t)(apple_hid_descriptor_len >> 8);
+
+    /* Endpoint descriptor (interrupt IN, 1 ms poll, 64-byte max packet
+       -- enough for any Apple report). EP address 0x81 to match what
+       TinyUSB allocates for HID instance 0. */
+    *p++ = 7; *p++ = TUSB_DESC_ENDPOINT;
+    *p++ = 0x81;
+    *p++ = TUSB_XFER_INTERRUPT;
+    *p++ = 64; *p++ = 0;
+    *p++ = 1;
+}
+
+void passthrough_clear_apple_descriptor(void) {
+    apple_hid_descriptor_len = 0;
+}
+
+bool passthrough_descriptor_ready(void) {
+    return apple_hid_descriptor_len > 0;
+}
+
+uint8_t const *passthrough_apple_hid_descriptor(uint16_t *out_len) {
+    if (out_len) *out_len = apple_hid_descriptor_len;
+    return apple_hid_descriptor;
+}
+#endif /* DH_PASSTHROUGH */
+
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
     (void)index; // for multiple configurations
+
+#ifdef DH_PASSTHROUGH
+    /* Passthrough takes precedence over everything else -- when an Apple
+       trackpad is on the host port and we've cached its descriptor,
+       expose ourselves as that trackpad. */
+    if (global_state.trackpad_attached && passthrough_descriptor_ready())
+        return passthrough_config_descriptor;
+#endif
 
 #ifdef DH_PATH_P
     /* Trackpad-attached takes precedence over config mode -- if both

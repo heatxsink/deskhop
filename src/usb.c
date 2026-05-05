@@ -243,6 +243,18 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
 
     hid_interface_t *iface = &global_state.iface[dev_addr-1][instance];
 
+#ifdef DH_PASSTHROUGH
+    if (iface->vendor_id == APPLE_VID
+        && iface->product_id == MAGIC_TRACKPAD_PID
+        && itf_protocol == HID_ITF_PROTOCOL_MOUSE
+        && global_state.trackpad_attached) {
+        extern void passthrough_clear_apple_descriptor(void);
+        passthrough_clear_apple_descriptor();
+        global_state.trackpad_attached    = false;
+        global_state.reenumerate_pending  = true;
+    }
+#endif
+
 #ifdef DH_PATH_P
     /* If this was the Magic Trackpad's mouse-class interface, drop
        the trackpad-attached flag and ask core0 to re-enumerate so the
@@ -358,6 +370,22 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
         && itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
         mt_gesture_init(&mt_state);
         send_magic_trackpad_activation(dev_addr, instance);
+#ifdef DH_PASSTHROUGH
+        /* Cache the trackpad's HID report descriptor so we can re-emit
+           it as our own. The mouse-class interface (instance 1) is the
+           one whose descriptor describes the multi-touch reports
+           hid-magicmouse expects to parse, so this is the right one to
+           cache. */
+        extern void passthrough_cache_apple_descriptor(uint8_t const *desc, uint16_t len);
+#ifdef DH_DEBUG_TRACKPAD
+        dh_debug_printf("PASSTHROUGH: caching Apple HID descriptor (%u bytes)\n", desc_len);
+#endif
+        passthrough_cache_apple_descriptor(desc_report, desc_len);
+        if (!global_state.trackpad_attached) {
+            global_state.trackpad_attached    = true;
+            global_state.reenumerate_pending  = true;
+        }
+#endif
 #ifdef DH_PATH_P
         /* Trackpad just attached. Flag for core0 to re-enumerate so the
            host re-reads our descriptor and sees the touchpad-only
