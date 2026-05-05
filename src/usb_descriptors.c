@@ -47,6 +47,21 @@ uint8_t const desc_hid_report[] = {TUD_HID_REPORT_DESC_KEYBOARD(HID_REPORT_ID(RE
                                    TUD_HID_REPORT_DESC_SYSTEM_CONTROL(HID_REPORT_ID(REPORT_ID_SYSTEM))
                                    };
 
+#ifdef DH_PATH_P
+/* Alternate main HID report descriptor used in trackpad-attached mode:
+   no abs-mouse collection. The abs-mouse path is what triggers libinput
+   to classify a competing pointer device on the same seat, which then
+   activates dwtp suppression on the touchpad. With the abs-mouse gone
+   from the main interface (and the relmouse interface omitted from the
+   configuration descriptor), only the touchpad remains as a pointing
+   device and libinput stops filtering its events. */
+uint8_t const desc_hid_report_trackpad[] = {
+    TUD_HID_REPORT_DESC_KEYBOARD(HID_REPORT_ID(REPORT_ID_KEYBOARD)),
+    TUD_HID_REPORT_DESC_CONSUMER_CTRL(HID_REPORT_ID(REPORT_ID_CONSUMER)),
+    TUD_HID_REPORT_DESC_SYSTEM_CONTROL(HID_REPORT_ID(REPORT_ID_SYSTEM))
+};
+#endif
+
 uint8_t const desc_hid_report_relmouse[] = {TUD_HID_REPORT_DESC_MOUSEHELP(HID_REPORT_ID(REPORT_ID_RELMOUSE))};
 
 uint8_t const desc_hid_report_vendor[] = {TUD_HID_REPORT_DESC_VENDOR_CTRL(HID_REPORT_ID(REPORT_ID_VENDOR))};
@@ -61,16 +76,18 @@ uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
             return desc_hid_report_vendor;
 
 #ifdef DH_PATH_P
-    /* HID instance index (the order this interface appears in
-       desc_configuration / desc_configuration_config among HID
-       interfaces) -- NOT the USB interface number. Touchpad is the
-       3rd HID interface in normal mode (instance 2) and the 4th in
-       config mode (instance 3). The USB interface number itself is 6
-       (a deliberate gap to keep CDC at 4-5), but TinyUSB's callback
-       receives the HID-instance order. */
-    uint8_t touchpad_hid_instance = global_state.config_mode_active ? 3 : 2;
-    if (instance == touchpad_hid_instance)
-        return ptp_descriptor;
+    /* In trackpad-attached mode the configuration has only 2 HID
+       interfaces: main (keyboard / consumer / system) at instance 0
+       and touchpad at instance 1. In every other mode, the touchpad
+       is at HID instance 2 (normal) or 3 (config mode). */
+    if (global_state.trackpad_attached) {
+        if (instance == 0) return desc_hid_report_trackpad;
+        if (instance == 1) return ptp_descriptor;
+    } else {
+        uint8_t touchpad_hid_instance = global_state.config_mode_active ? 3 : 2;
+        if (instance == touchpad_hid_instance)
+            return ptp_descriptor;
+    }
 #endif
 
     switch(instance) {
@@ -321,8 +338,60 @@ uint8_t const desc_configuration_config[] = {
 #endif
 };
 
+#ifdef DH_PATH_P
+/* Trackpad-attached configuration: keyboard interface (no abs mouse
+   in its report descriptor) + touchpad interface. The standard mouse
+   and relmouse interfaces are omitted entirely so libinput sees only
+   one pointer device on this seat (the touchpad), eliminating the
+   dwtp-on suppression that hides the touchpad whenever a "trackpoint"
+   is present. */
+#ifndef DH_DEBUG
+#define ITF_NUM_TOTAL_TRACKPAD       2
+#define CONFIG_TOTAL_LEN_TRACKPAD    (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN)
+#else
+#define ITF_NUM_CDC_TRACKPAD         2
+#define ITF_NUM_TOTAL_TRACKPAD       3
+#define CONFIG_TOTAL_LEN_TRACKPAD    (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN + TUD_CDC_DESC_LEN)
+#endif
+
+uint8_t const desc_configuration_trackpad[] = {
+    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL_TRACKPAD, 0, CONFIG_TOTAL_LEN_TRACKPAD,
+                          TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 500),
+
+    /* Main HID interface: keyboard + consumer + system (no abs mouse) */
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID,
+                       STRID_PRODUCT,
+                       HID_ITF_PROTOCOL_NONE,
+                       sizeof(desc_hid_report_trackpad),
+                       EPNUM_HID,
+                       CFG_TUD_HID_EP_BUFSIZE,
+                       1),
+
+    /* Touchpad interface */
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID_TOUCHPAD,
+                       STRID_TOUCHPAD,
+                       HID_ITF_PROTOCOL_NONE,
+                       sizeof(ptp_descriptor),
+                       EPNUM_HID_TOUCHPAD,
+                       CFG_TUD_HID_EP_BUFSIZE,
+                       1),
+#ifdef DH_DEBUG
+    TUD_CDC_DESCRIPTOR(
+        ITF_NUM_CDC_TRACKPAD, STRID_DEBUG, EPNUM_CDC_NOTIF, 8,
+        EPNUM_CDC_OUT, EPNUM_CDC_IN, CFG_TUD_CDC_EP_BUFSIZE),
+#endif
+};
+#endif /* DH_PATH_P */
+
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
     (void)index; // for multiple configurations
+
+#ifdef DH_PATH_P
+    /* Trackpad-attached takes precedence over config mode -- if both
+       happen at once, the user wants their trackpad to work. */
+    if (global_state.trackpad_attached)
+        return desc_configuration_trackpad;
+#endif
 
     if (global_state.config_mode_active)
         return desc_configuration_config;

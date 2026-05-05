@@ -223,6 +223,22 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
 
     hid_interface_t *iface = &global_state.iface[dev_addr-1][instance];
 
+#ifdef DH_PATH_P
+    /* If this was the Magic Trackpad's mouse-class interface, drop
+       the trackpad-attached flag and ask core0 to re-enumerate so the
+       host stops seeing the touchpad descriptor. We key on the mouse-
+       class interface (instance 1 in the trackpad's enumeration)
+       because the trackpad has multiple HID interfaces and only that
+       one is unique to "trackpad is here." */
+    if (iface->vendor_id == APPLE_VID
+        && iface->product_id == MAGIC_TRACKPAD_PID
+        && itf_protocol == HID_ITF_PROTOCOL_MOUSE
+        && global_state.trackpad_attached) {
+        global_state.trackpad_attached    = false;
+        global_state.reenumerate_pending  = true;
+    }
+#endif
+
     switch (itf_protocol) {
         case HID_ITF_PROTOCOL_KEYBOARD:
             global_state.keyboard_connected = false;
@@ -322,6 +338,19 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
         && itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
         mt_gesture_init(&mt_state);
         send_magic_trackpad_activation(dev_addr, instance);
+#ifdef DH_PATH_P
+        /* Trackpad just attached. Flag for core0 to re-enumerate so the
+           host re-reads our descriptor and sees the touchpad-only
+           configuration (mouse interfaces hidden). */
+#ifdef DH_DEBUG_TRACKPAD
+        dh_debug_printf("PATH_P: trackpad mount detected, flag was %u\n",
+                        global_state.trackpad_attached ? 1 : 0);
+#endif
+        if (!global_state.trackpad_attached) {
+            global_state.trackpad_attached    = true;
+            global_state.reenumerate_pending  = true;
+        }
+#endif
     }
 #endif
 }

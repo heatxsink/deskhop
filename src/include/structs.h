@@ -154,6 +154,19 @@ typedef struct {
     bool config_mode_active; // True when config mode is active
     bool digitizer_active;   // True when digitizer Win/Mac workaround is active
 
+    /* Path P (Magic Trackpad as PTP touchpad to host).
+       trackpad_attached: Magic Trackpad is currently mounted on the
+       deskhop host port. Drives device-side descriptor selection so we
+       hide the standard mouse interfaces and present a touchpad
+       interface instead, avoiding libinput's dwtp suppression that
+       happens when both pointer kinds are present.
+       reenumerate_pending: edge-trigger flag set in the host-side
+       mount/unmount callbacks (core1) and consumed by the core0 main
+       loop, which calls tud_disconnect()/tud_connect() to force the
+       host to re-read our configuration descriptor. */
+    bool trackpad_attached;
+    bool reenumerate_pending;
+
     /* Onboard LED blinky (provide feedback when e.g. mouse connected) */
     int32_t blinks_left;     // How many blink transitions are left
     int32_t last_led_change; // Timestamp of the last time led state transitioned
