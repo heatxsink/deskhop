@@ -36,6 +36,15 @@ enum packet_type_e {
     PROXY_PACKET_MSG     = 23,
     REQUEST_BYTE_MSG     = 24,
     RESPONSE_BYTE_MSG    = 25,
+
+    /* Phase 2 -- Magic Trackpad symmetric passthrough plumbing.
+       PRESENCE: single byte, 1 = trackpad is on the SENDER's host port.
+       DESC_CHUNK / FRAME_CHUNK: chunked messages, see passthrough_uart.h
+       for wire format. Only meaningful when DH_PASSTHROUGH is on; OFF
+       builds ignore them at dispatch. */
+    TRACKPAD_PRESENCE_MSG    = 26,
+    TRACKPAD_DESC_CHUNK_MSG  = 27,
+    TRACKPAD_FRAME_CHUNK_MSG = 28,
 };
 
 typedef enum {

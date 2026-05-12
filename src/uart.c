@@ -89,6 +89,13 @@ const uart_handler_t uart_handler[] = {
 
     {.type = HEARTBEAT_MSG, .handler = handle_heartbeat_msg},
     {.type = PROXY_PACKET_MSG, .handler = handle_proxy_msg},
+
+#ifdef DH_PASSTHROUGH
+    /* Phase 2 -- Magic Trackpad symmetric passthrough plumbing. */
+    {.type = TRACKPAD_PRESENCE_MSG,    .handler = handle_trackpad_presence_msg},
+    {.type = TRACKPAD_DESC_CHUNK_MSG,  .handler = handle_trackpad_desc_chunk_msg},
+    {.type = TRACKPAD_FRAME_CHUNK_MSG, .handler = handle_trackpad_frame_chunk_msg},
+#endif
 };
 
 void process_packet(uart_packet_t *packet, device_t *state) {
