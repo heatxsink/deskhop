@@ -10,6 +10,9 @@
  */
 
 #include "main.h"
+#ifdef DH_PASSTHROUGH
+#include "passthrough.h"
+#endif
 
 void task_scheduler(device_t *state, task_t *task) {
     uint64_t current_time = time_us_64();
@@ -69,7 +72,6 @@ void usb_device_task(device_t *state) {
 
 void usb_host_task(device_t *state) {
 #ifdef DH_PASSTHROUGH
-    extern void passthrough_tick_unmount_debounce(void);
     passthrough_tick_unmount_debounce();
 #endif
     if (tuh_inited())

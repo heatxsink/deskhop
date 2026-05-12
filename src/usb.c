@@ -14,6 +14,9 @@
 #ifdef DH_MAGIC_TRACKPAD
 #include "magic_trackpad_tap.h"
 #endif
+#ifdef DH_PASSTHROUGH
+#include "passthrough.h"
+#endif
 
 _Static_assert(MAX_DEVICES <= CFG_TUH_DEVICE_MAX,
                "MAX_DEVICES must not exceed CFG_TUH_DEVICE_MAX");
@@ -192,7 +195,6 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
            hold off and let usb_host_task commit the unmount only if it
            sticks. A remount within the debounce window cancels the
            pending unmount entirely. */
-        extern uint64_t passthrough_unmount_at_us;
         passthrough_unmount_at_us = time_us_64();
     }
 #endif
@@ -302,8 +304,6 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
            one whose descriptor describes the multi-touch reports
            hid-magicmouse expects to parse, so this is the right one to
            cache. */
-        extern void passthrough_cache_apple_descriptor(uint8_t const *desc, uint16_t len);
-        extern uint64_t passthrough_unmount_at_us;
         bool was_pending_unmount = (passthrough_unmount_at_us != 0);
         passthrough_unmount_at_us = 0;  /* cancel any pending unmount */
 #ifdef DH_DEBUG_TRACKPAD
@@ -512,6 +512,14 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
 
         tuh_hid_receive_report(dev_addr, instance);
         return;
+        /* Note: when DH_PASSTHROUGH is on and mt_decode_report() failed
+           (trackpad still in 8-byte mouse-emulation mode pre-activation),
+           we return here without falling through to the standard mouse
+           pipeline. Active-side: the raw bytes were forwarded above and
+           hid-magicmouse handles them. Inactive-side: those bytes are
+           dropped during the brief window before activation lands. The
+           window is typically <1 s; if it bites in practice, fall through
+           to the Path G translation block below instead of returning. */
 #endif
         mt_frame_t frame;
         bool consumed = false;
@@ -545,7 +553,6 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                step above. Helper handles the no-op case when the flag
                is off. */
             mt_tap_drain_pending();
-
 
             /* Mouse-emit path. The translated button persists for the
                duration of the held click rather than reflecting the raw

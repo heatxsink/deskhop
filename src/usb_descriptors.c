@@ -12,6 +12,9 @@
 #include "usb_descriptors.h"
 #include "main.h"
 #include "tusb.h"
+#ifdef DH_PASSTHROUGH
+#include "passthrough.h"
+#endif
 
 //--------------------------------------------------------------------+
 // Device Descriptors
@@ -28,11 +31,6 @@ tusb_desc_device_t const desc_device = DEVICE_DESCRIPTOR(0x1209, 0xc000);
    and a Magic Trackpad is attached on the host port -- so the host PC's
    hid-magicmouse driver claims the device by VID/PID match. */
 tusb_desc_device_t const desc_device_apple = DEVICE_DESCRIPTOR(0x05ac, 0x0265);
-
-/* Forward declarations for passthrough helpers defined later in this
-   file. The callbacks above need them before their definition. */
-bool          passthrough_descriptor_ready(void);
-uint8_t const *passthrough_apple_hid_descriptor(uint16_t *out_len);
 #endif
 
 // Invoked when received GET DEVICE DESCRIPTOR
