@@ -58,6 +58,14 @@ bool passthrough_uart_send_chunked(uint8_t packet_type, const uint8_t *data, uin
                           / PASSTHROUGH_UART_CHUNK_DATA;
     if (num_chunks > PASSTHROUGH_UART_MAX_CHUNKS) return false;
 
+    /* Atomicity: reject the entire send if the TX queue can't absorb every
+       chunk. Partial sends leave the receiver wedged in_progress=true with
+       a half-assembled message until the next seq=0 lands, which (for the
+       one-shot descriptor send) could be never. Refusing atomically lets
+       the caller retry the whole message later. */
+    uint32_t queue_used = queue_get_level(&global_state.uart_tx_queue);
+    if (queue_used + num_chunks > UART_QUEUE_LENGTH) return false;
+
     for (uint8_t seq = 0; seq < num_chunks; seq++) {
         uint8_t chunk[PACKET_DATA_LENGTH] = {0};
         bool    is_last = (seq == num_chunks - 1);
