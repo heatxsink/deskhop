@@ -45,7 +45,7 @@ void kick_watchdog_task(device_t *state) {
  * ================================================== */
 
 void usb_device_task(device_t *state) {
-#if defined(DH_PATH_P) || defined(DH_PASSTHROUGH)
+#ifdef DH_PASSTHROUGH
     /* Re-enumeration trigger from the host-side mount/unmount callbacks
        on core1. Setting reenumerate_pending = true asks core0 to drop
        the device-side USB pull-up briefly so the host re-scans our

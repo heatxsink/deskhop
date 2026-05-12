@@ -21,13 +21,11 @@ option(DH_DEBUG_TRACKPAD "Log HID descriptors and Apple HID reports for trackpad
 ## that's a per-user preference and belongs in flash config (runtime),
 ## not the build.
 option(DH_MAGIC_TRACKPAD "Apple Magic Trackpad support" ON)
-option(DH_PATH_P "Path P: Microsoft Precision Touchpad descriptor + native gesture passthrough. OFF by default; experimental, see docs/PATH_P_DESIGN.md." OFF)
 
 ## Passthrough: re-emit the Apple Magic Trackpad's own HID descriptor
 ## with Apple's VID/PID. Linux/macOS hosts then bind hid-magicmouse
-## natively; gestures/quirks are handled by the kernel driver. Mutually
-## exclusive with DH_PATH_P. Linux/macOS only at this stage; Windows
-## has no native Apple driver and would need PTP fallback (future).
+## natively; gestures/quirks are handled by the kernel driver.
+## Linux/macOS only at this stage; Windows has no native Apple driver.
 option(DH_PASSTHROUGH "Apple Magic Trackpad USB passthrough mode (Linux/macOS only)" OFF)
 
 ## Hardware Configuration
@@ -161,17 +159,7 @@ if (DH_MAGIC_TRACKPAD)
   add_definitions(-DDH_MAGIC_TRACKPAD)
 endif()
 
-if (DH_PATH_P)
-  if (NOT DH_MAGIC_TRACKPAD)
-    message(FATAL_ERROR "DH_PATH_P requires DH_MAGIC_TRACKPAD=ON (PTP report path consumes the multi-touch decoder).")
-  endif()
-  add_definitions(-DDH_PATH_P)
-endif()
-
 if (DH_PASSTHROUGH)
-  if (DH_PATH_P)
-    message(FATAL_ERROR "DH_PASSTHROUGH and DH_PATH_P are mutually exclusive (different device-side descriptors).")
-  endif()
   if (NOT DH_MAGIC_TRACKPAD)
     message(FATAL_ERROR "DH_PASSTHROUGH requires DH_MAGIC_TRACKPAD=ON (need the trackpad mount/activation hooks).")
   endif()

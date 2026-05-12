@@ -11,14 +11,6 @@
 
 #include "main.h"
 #include "magic_trackpad.h"
-#ifdef DH_PATH_P
-#include "ptp_descriptor.h"
-/* Last value the host wrote via SET_FEATURE for the Input Mode report.
-   Defaults to 3 (multi-touch) so even before the host writes, we'd
-   answer correctly if it reads first. hid-multitouch typically writes
-   3 immediately after enumeration. */
-static uint8_t ptp_input_mode = 3;
-#endif
 #ifdef DH_MAGIC_TRACKPAD
 #include "magic_trackpad_tap.h"
 #endif
@@ -87,33 +79,6 @@ uint16_t tud_hid_get_report_cb(uint8_t instance,
                                hid_report_type_t report_type,
                                uint8_t *buffer,
                                uint16_t request_len) {
-#ifdef DH_PATH_P
-    /* Touchpad HID instance: Microsoft PTP feature reports.
-       The host reads these during enumeration (Max Contact Count) or
-       to query current mode (Input Mode). Without these answers,
-       libinput won't trust the device enough to act on its events. */
-    /* Touchpad's HID instance index depends on which configuration
-       descriptor is active. Trackpad-attached: only 2 HID interfaces
-       (main + touchpad), so touchpad is at instance 1. Otherwise the
-       touchpad sits after main + relmouse (and vendor in config mode). */
-    uint8_t touchpad_hid_instance;
-    if (global_state.trackpad_attached)
-        touchpad_hid_instance = 1;
-    else if (global_state.config_mode_active)
-        touchpad_hid_instance = 3;
-    else
-        touchpad_hid_instance = 2;
-    if (instance == touchpad_hid_instance && report_type == HID_REPORT_TYPE_FEATURE) {
-        if (report_id == PTP_REPORT_ID_FEATURE_MAX && request_len >= 1) {
-            buffer[0] = PTP_MAX_CONTACTS;
-            return 1;
-        }
-        if (report_id == PTP_REPORT_ID_FEATURE_MODE && request_len >= 1) {
-            buffer[0] = ptp_input_mode;
-            return 1;
-        }
-    }
-#endif
     return 0;
 }
 
@@ -129,35 +94,6 @@ void tud_hid_set_report_cb(uint8_t instance,
                            hid_report_type_t report_type,
                            uint8_t const *buffer,
                            uint16_t bufsize) {
-#ifdef DH_PATH_P
-    /* Touchpad HID instance: host writes the Input Mode feature
-       report to switch us between mouse-emulation (0) and multi-touch
-       (3). hid-multitouch sets it to 3 when binding. We just store
-       and ack -- our trackpad path always emits MT reports anyway,
-       independent of mode. Storing lets us answer GET_REPORT with the
-       last value the host wrote, which is what libinput expects. */
-    {
-        /* Touchpad's HID instance index depends on which configuration
-           descriptor is active. Trackpad-attached: only 2 HID interfaces
-           (main + touchpad), so touchpad is at instance 1. Otherwise the
-           touchpad sits after main + relmouse (and vendor in config mode). */
-        uint8_t touchpad_hid_instance;
-        if (global_state.trackpad_attached)
-            touchpad_hid_instance = 1;
-        else if (global_state.config_mode_active)
-            touchpad_hid_instance = 3;
-        else
-            touchpad_hid_instance = 2;
-        if (instance == touchpad_hid_instance &&
-            report_type == HID_REPORT_TYPE_FEATURE &&
-            report_id == PTP_REPORT_ID_FEATURE_MODE &&
-            bufsize >= 1) {
-            ptp_input_mode = buffer[0];
-            return;
-        }
-    }
-#endif
-
     /* We received a report on the config report ID */
     if (instance == ITF_NUM_HID_VENDOR && report_id == REPORT_ID_VENDOR) {
         /* Security - only if config mode is enabled are we allowed to do anything. While the report_id
@@ -258,22 +194,6 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
            pending unmount entirely. */
         extern uint64_t passthrough_unmount_at_us;
         passthrough_unmount_at_us = time_us_64();
-    }
-#endif
-
-#ifdef DH_PATH_P
-    /* If this was the Magic Trackpad's mouse-class interface, drop
-       the trackpad-attached flag and ask core0 to re-enumerate so the
-       host stops seeing the touchpad descriptor. We key on the mouse-
-       class interface (instance 1 in the trackpad's enumeration)
-       because the trackpad has multiple HID interfaces and only that
-       one is unique to "trackpad is here." */
-    if (iface->vendor_id == APPLE_VID
-        && iface->product_id == MAGIC_TRACKPAD_PID
-        && itf_protocol == HID_ITF_PROTOCOL_MOUSE
-        && global_state.trackpad_attached) {
-        global_state.trackpad_attached    = false;
-        global_state.reenumerate_pending  = true;
     }
 #endif
 
@@ -398,19 +318,6 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
         /* If was_pending_unmount, the host PC never saw us drop the
            trackpad -- no re-enumeration needed. */
         (void)was_pending_unmount;
-#endif
-#ifdef DH_PATH_P
-        /* Trackpad just attached. Flag for core0 to re-enumerate so the
-           host re-reads our descriptor and sees the touchpad-only
-           configuration (mouse interfaces hidden). */
-#ifdef DH_DEBUG_TRACKPAD
-        dh_debug_printf("PATH_P: trackpad mount detected, flag was %u\n",
-                        global_state.trackpad_attached ? 1 : 0);
-#endif
-        if (!global_state.trackpad_attached) {
-            global_state.trackpad_attached    = true;
-            global_state.reenumerate_pending  = true;
-        }
 #endif
     }
 #endif
@@ -639,225 +546,12 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                is off. */
             mt_tap_drain_pending();
 
-#ifdef DH_PATH_P
-            /* Path P: forward the decoded multi-touch contacts as a
-               Microsoft Precision Touchpad input report. The host's
-               libinput / mutter / system drivers run their own gesture
-               state machines on this stream, exposing native trackpad
-               gestures to the user without us translating them in
-               firmware.
-
-               Slot stability matters: the kernel's hid-multitouch
-               driver tracks contacts by slot (array position) within
-               each report. If the same physical finger lands in slot 0
-               one frame and slot 2 the next (because Apple's
-               finger_id ordering shifted), the kernel sees phantom
-               begin/end transitions and never recognizes the contact.
-               We pin each Apple finger_id to a stable PTP slot via
-               `slot = id % PTP_MAX_CONTACTS`, so the same physical
-               finger always lands in the same array position.
-
-               Coordinate scale: Magic Trackpad 2 USB ranges roughly
-               -3678..+3934 X and -2478..+2587 Y per hid-magicmouse.c
-               TRACKPAD2_MIN/MAX. Rescale to PTP logical range. */
-            {
-                /* Per-slot pinning state. Apple's trackpad firmware drops
-                   and re-acquires contacts during light continuous slides
-                   and assigns each re-acquisition a fresh finger_id. With
-                   a naive id-%-N mapping, libinput sees a parade of fresh
-                   fingers and refuses to emit motion deltas across the
-                   transitions ("contact begin" samples are anchor frames).
-                   Match by Apple ID first; on a miss, prefer a recently
-                   inactive slot whose last position is close to the new
-                   finger -- that's a re-acquisition. Within HYSTERESIS,
-                   keep absent slots tip-down so libinput sees one
-                   continuous contact rather than end+begin pairs. */
-                typedef struct {
-                    bool     active;
-                    uint8_t  apple_id;
-                    int16_t  last_x, last_y;
-                    uint32_t first_seen_us;
-                    uint32_t last_seen_us;
-                } ptp_slot_state_t;
-
-                static ptp_slot_state_t ptp_slots[PTP_MAX_CONTACTS] = {0};
-                /* 40ms is enough to absorb 3-4 dropped frames at Apple's
-                   100Hz native rate without dragging on long enough to
-                   distort multi-finger gesture timing. */
-                const uint32_t PTP_HYSTERESIS_US     = 40000;
-                const int32_t  PTP_REACQUIRE_DIST_SQ = 250 * 250;
-                /* Apple's mechanical click momentarily distorts surface
-                   pressure and Apple's firmware registers a transient
-                   second contact for ~10-20ms. With clickfinger mode,
-                   libinput reads 2-contacts-at-click as a right-click.
-                   Drop contacts younger than this when the click bit is
-                   asserted so single-finger clicks stay single-finger. */
-                const uint32_t PTP_CLICK_GHOST_AGE_US = 30000;
-
-                ptp_input_report_t ptp = {0};
-                bool slot_filled[PTP_MAX_CONTACTS] = {0};
-                int active = 0;
-                uint32_t now_us = time_us_32();
-
-                for (int i = 0; i < frame.finger_count && i < MT_MAX_FINGERS; i++) {
-                    int32_t mx = (int32_t)frame.fingers[i].x + 3678;
-                    int32_t my = (int32_t)frame.fingers[i].y + 2478;
-                    int32_t px = mx * PTP_LOGICAL_MAX_X / (3678 + 3934);
-                    int32_t py = my * PTP_LOGICAL_MAX_Y / (2478 + 2587);
-                    if (px < 0) px = 0;
-                    if (px > PTP_LOGICAL_MAX_X) px = PTP_LOGICAL_MAX_X;
-                    if (py < 0) py = 0;
-                    if (py > PTP_LOGICAL_MAX_Y) py = PTP_LOGICAL_MAX_Y;
-
-                    int slot = -1;
-
-                    /* 1. Try to match by Apple ID -- normal case, finger
-                          continues with the same id across frames. */
-                    for (int s = 0; s < PTP_MAX_CONTACTS; s++) {
-                        if (ptp_slots[s].active && !slot_filled[s] &&
-                            ptp_slots[s].apple_id == frame.fingers[i].finger_id) {
-                            slot = s;
-                            break;
-                        }
-                    }
-                    /* 2. Position-based re-acquisition: new finger_id but
-                          a previously-pinned slot was at this position
-                          recently. Treat as the same physical finger. */
-                    if (slot < 0) {
-                        int32_t best_dsq = PTP_REACQUIRE_DIST_SQ;
-                        int     best_s   = -1;
-                        for (int s = 0; s < PTP_MAX_CONTACTS; s++) {
-                            if (slot_filled[s] || !ptp_slots[s].active) continue;
-                            int32_t dx = px - ptp_slots[s].last_x;
-                            int32_t dy = py - ptp_slots[s].last_y;
-                            int32_t dsq = dx * dx + dy * dy;
-                            if (dsq < best_dsq) {
-                                best_dsq = dsq;
-                                best_s   = s;
-                            }
-                        }
-                        slot = best_s;
-                    }
-                    /* 3. Fall back to any free slot. */
-                    if (slot < 0) {
-                        for (int s = 0; s < PTP_MAX_CONTACTS; s++) {
-                            if (!ptp_slots[s].active && !slot_filled[s]) {
-                                slot = s;
-                                break;
-                            }
-                        }
-                    }
-                    if (slot < 0) continue;  /* report is full; drop excess */
-
-                    /* Fresh assignment (slot wasn't active) gets a new
-                       first_seen_us. Continuations (Apple-ID match or
-                       position re-acquire) keep the existing first_seen
-                       so the contact's age accumulates across blinks. */
-                    if (!ptp_slots[slot].active)
-                        ptp_slots[slot].first_seen_us = now_us;
-                    ptp_slots[slot].active       = true;
-                    ptp_slots[slot].apple_id     = frame.fingers[i].finger_id;
-                    ptp_slots[slot].last_x       = (int16_t)px;
-                    ptp_slots[slot].last_y       = (int16_t)py;
-                    ptp_slots[slot].last_seen_us = now_us;
-
-                    /* Suppress contacts that appeared within the
-                       click-ghost window when the click bit is asserted.
-                       Real fingers have been on the pad for hundreds of
-                       ms; click-induced pressure ghosts are <30ms old. */
-                    if (phys_click_now &&
-                        (now_us - ptp_slots[slot].first_seen_us) < PTP_CLICK_GHOST_AGE_US) {
-                        slot_filled[slot] = true;  /* still claim slot */
-                        continue;                  /* but don't emit it */
-                    }
-
-                    ptp.contacts[slot].tip_switch = 1;
-                    ptp.contacts[slot].contact_id = slot;
-                    ptp.contacts[slot].x          = (int16_t)px;
-                    ptp.contacts[slot].y          = (int16_t)py;
-                    slot_filled[slot]             = true;
-                    active++;
-                }
-
-                /* Hold not-seen-this-frame slots within hysteresis only
-                   when there's nothing else active. Holding stale slots
-                   alongside live ones distorts multi-finger gestures
-                   (two-finger scroll wants crisp release timing -- a
-                   stuck 80ms ghost finger turns a scroll into a confused
-                   one-finger-moves / one-finger-still pattern that
-                   libinput can't interpret). */
-                bool any_filled_this_frame = (active > 0);
-                for (int s = 0; s < PTP_MAX_CONTACTS; s++) {
-                    if (slot_filled[s] || !ptp_slots[s].active) continue;
-                    if (!any_filled_this_frame &&
-                        (now_us - ptp_slots[s].last_seen_us) < PTP_HYSTERESIS_US) {
-                        ptp.contacts[s].tip_switch = 1;
-                        ptp.contacts[s].contact_id = s;
-                        ptp.contacts[s].x          = ptp_slots[s].last_x;
-                        ptp.contacts[s].y          = ptp_slots[s].last_y;
-                        active++;
-                    } else {
-                        ptp_slots[s].active = false;
-                    }
-                }
-
-                ptp.contact_count = (uint8_t)active;
-                ptp.buttons       = phys_click_now ? 0x01 : 0x00;
-                bool sent = tud_touchpad_report(&ptp);
-#ifdef DH_DEBUG_TRACKPAD
-                /* Print the build stamp once on the first PTP send so a
-                   CDC capture unambiguously identifies which firmware
-                   image is running -- no more guessing whether the flash
-                   stuck. */
-                static bool ptp_build_stamp_printed = false;
-                if (!ptp_build_stamp_printed) {
-                    ptp_build_stamp_printed = true;
-                    dh_debug_printf("PATH_P: build " __DATE__ " " __TIME__ "\n");
-                }
-                /* Throttled: 1 line every 200ms so the CDC log stays
-                   readable. Counts attempts and successes between
-                   prints so we can see if tud_hid_n_report is silently
-                   refusing reports. */
-                static uint32_t ptp_log_last = 0;
-                static uint32_t ptp_attempts = 0;
-                static uint32_t ptp_succeeds = 0;
-                ptp_attempts++;
-                if (sent) ptp_succeeds++;
-                uint32_t now32 = time_us_32();
-                if (now32 - ptp_log_last > 200000) {
-                    ptp_log_last = now32;
-                    dh_debug_printf("PATH_P: send attempts=%lu ok=%lu fingers=%d active=%d\n",
-                                    (unsigned long)ptp_attempts,
-                                    (unsigned long)ptp_succeeds,
-                                    (int)frame.finger_count,
-                                    active);
-                }
-#else
-                (void)sent;
-#endif
-            }
-#endif
 
             /* Mouse-emit path. The translated button persists for the
                duration of the held click rather than reflecting the raw
                trackpad bit. */
             uint8_t buttons = (uint8_t)held_button;
             bool buttons_changed = (buttons != global_state.mouse_buttons);
-
-#ifdef DH_PATH_P
-            /* Path P + trackpad attached + this is the active output:
-               PTP above already delivered the contacts and click locally,
-               and update_mouse_position's edge-crossing logic confuses
-               libinput's PTP stream (clicks were triggering spurious
-               screen-edge switches via the legacy absolute-mouse path).
-               Skip the mouse-emit entirely on the active side. The
-               fallback still runs on the inactive side so output_mouse_report
-               can route the trackpad over UART to whichever Pico is active. */
-            bool ptp_owns_local =
-                global_state.trackpad_attached && CURRENT_BOARD_IS_ACTIVE_OUTPUT;
-#else
-            const bool ptp_owns_local = false;
-#endif
 
             /* Throttle emit to ~100 Hz, accumulating motion across frames in
                between. The trackpad's native report rate (100-250 Hz) appears
@@ -877,8 +571,7 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
 
             uint32_t now_us = time_us_32();
             bool have_motion = (accum_dx || accum_dy || accum_wheel || accum_pan);
-            if (!ptp_owns_local &&
-                (have_motion || buttons_changed) &&
+            if ((have_motion || buttons_changed) &&
                 (now_us - last_emit_us) >= EMIT_INTERVAL_US) {
                 mouse_values_t values = {
                     .move_x  = accum_dx,
@@ -893,12 +586,6 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                 if (dir != NONE) do_screen_switch(&global_state, dir);
                 global_state.mouse_buttons = buttons;
                 accum_dx = accum_dy = accum_wheel = accum_pan = 0;
-                last_emit_us = now_us;
-            } else if (ptp_owns_local) {
-                /* Drain accumulators so they don't pile up indefinitely
-                   while PTP owns the local pointer. */
-                accum_dx = accum_dy = accum_wheel = accum_pan = 0;
-                global_state.mouse_buttons = buttons;
                 last_emit_us = now_us;
             }
 
