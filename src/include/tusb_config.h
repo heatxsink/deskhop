@@ -120,6 +120,8 @@ extern int dh_debug_printf(const char *__restrict __format, ...);
  *==============================================================================*/
 
 // Enable HID (Human Interface Device) class (keyboard, mouse, etc.).
+// 3 instances (HID, relmouse, vendor). Passthrough mode reuses instance 0
+// for the trackpad's own descriptor and doesn't add an instance.
 #define CFG_TUD_HID    3
 
 // Enable MSC (Mass Storage Class) class.
@@ -131,7 +133,14 @@ extern int dh_debug_printf(const char *__restrict __format, ...);
  *==============================================================================*/
 
 // HID endpoint buffer size (must be large enough for report ID + data).
+// 32 is sufficient for keyboard/mouse/consumer/system reports. Apple
+// Magic Trackpad multi-touch frames are up to 67 bytes, so passthrough
+// bumps to 64 -- the standard full-speed interrupt-EP max.
+#ifdef DH_PASSTHROUGH
+#define CFG_TUD_HID_EP_BUFSIZE 64
+#else
 #define CFG_TUD_HID_EP_BUFSIZE 32
+#endif
 
 // MSC endpoint buffer size.
 #define CFG_TUD_MSC_EP_BUFSIZE 512

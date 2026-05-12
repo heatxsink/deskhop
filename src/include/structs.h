@@ -154,6 +154,18 @@ typedef struct {
     bool config_mode_active; // True when config mode is active
     bool digitizer_active;   // True when digitizer Win/Mac workaround is active
 
+    /* Magic Trackpad passthrough state.
+       trackpad_attached: Magic Trackpad is currently mounted on the
+       deskhop host port. In passthrough mode, drives device-side
+       descriptor selection so we spoof Apple's VID/PID and re-emit
+       the trackpad's own HID descriptor to the host.
+       reenumerate_pending: edge-trigger flag set in the host-side
+       mount/unmount callbacks (core1) and consumed by the core0 main
+       loop, which calls tud_disconnect()/tud_connect() to force the
+       host to re-read our configuration descriptor. */
+    bool trackpad_attached;
+    bool reenumerate_pending;
+
     /* Onboard LED blinky (provide feedback when e.g. mouse connected) */
     int32_t blinks_left;     // How many blink transitions are left
     int32_t last_led_change; // Timestamp of the last time led state transitioned

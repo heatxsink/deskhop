@@ -22,6 +22,12 @@ option(DH_DEBUG_TRACKPAD "Log HID descriptors and Apple HID reports for trackpad
 ## not the build.
 option(DH_MAGIC_TRACKPAD "Apple Magic Trackpad support" ON)
 
+## Passthrough: re-emit the Apple Magic Trackpad's own HID descriptor
+## with Apple's VID/PID. Linux/macOS hosts then bind hid-magicmouse
+## natively; gestures/quirks are handled by the kernel driver.
+## Linux/macOS only at this stage; Windows has no native Apple driver.
+option(DH_PASSTHROUGH "Apple Magic Trackpad USB passthrough mode (Linux/macOS only)" OFF)
+
 ## Hardware Configuration
 set(DP_PIN_DEFAULT 14 CACHE STRING "Default USB D+ Pin Number")
 set(PIO_USE_TINYUSB 1 CACHE STRING "Make TinyUSB Manage the PIO USB Port")
@@ -151,6 +157,13 @@ endif()
 
 if (DH_MAGIC_TRACKPAD)
   add_definitions(-DDH_MAGIC_TRACKPAD)
+endif()
+
+if (DH_PASSTHROUGH)
+  if (NOT DH_MAGIC_TRACKPAD)
+    message(FATAL_ERROR "DH_PASSTHROUGH requires DH_MAGIC_TRACKPAD=ON (need the trackpad mount/activation hooks).")
+  endif()
+  add_definitions(-DDH_PASSTHROUGH)
 endif()
   
 target_include_directories(${binary} PUBLIC ${COMMON_INCLUDES})
