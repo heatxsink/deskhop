@@ -153,6 +153,111 @@ hotkey_combo_t *check_all_hotkeys(hid_keyboard_report_t *report, device_t *state
     return NULL;
 }
 
+/* ============================================================ *
+ * Output-toggle patterns: double-tap Left Ctrl, or Left Alt + Left
+ * Ctrl held alone. Implemented separately from the hotkeys[] table
+ * because they're temporal patterns (double-tap timing) and strict
+ * chord matches (key_count=0 in the table matches any report with
+ * the modifiers set, even alongside other keys -- way too loose for
+ * an output-toggle gesture).
+ *
+ * The Ctrl key is NOT consumed by either pattern. The OS still sees
+ * every Ctrl press; we just observe the pattern alongside.
+ * ============================================================ */
+
+#define DOUBLE_TAP_WINDOW_US 300000  /* 300 ms */
+
+typedef enum {
+    DT_IDLE,            /* nothing tracked */
+    DT_FIRST_HELD,      /* clean LCtrl press in progress, waiting for release */
+    DT_FIRST_RELEASED   /* clean LCtrl release recorded, waiting for second press */
+} double_tap_state_t;
+
+static struct {
+    double_tap_state_t state;
+    uint32_t           release_us;
+    bool               prev_ctrl;   /* LCtrl bit in the previous report */
+} dt_left_ctrl = { .state = DT_IDLE };
+
+/* Edge-triggered: true on the report where the chord first matches,
+   false on subsequent reports while the chord is held. Reset on any
+   report that doesn't match. */
+static bool prev_chord_match;
+
+static bool report_keys_empty(const hid_keyboard_report_t *r) {
+    for (int i = 0; i < KEYS_IN_USB_REPORT; i++) {
+        if (r->keycode[i] != 0)
+            return false;
+    }
+    return true;
+}
+
+/* Returns true if this report triggers an output toggle via either the
+   double-tap-LCtrl or the LAlt+LCtrl-chord pattern. */
+static bool detect_output_toggle_patterns(const hid_keyboard_report_t *r,
+                                          uint32_t now_us) {
+    bool keys_empty = report_keys_empty(r);
+
+    /* --- LAlt + LCtrl strict chord ---
+       Modifier byte equals exactly LAlt|LCtrl, zero other modifiers,
+       zero keys. Edge-triggered so we fire once when the chord first
+       engages, not on every poll while it's held. */
+    const uint8_t CHORD_MASK = KEYBOARD_MODIFIER_LEFTALT
+                             | KEYBOARD_MODIFIER_LEFTCTRL;
+    bool cur_chord = (r->modifier == CHORD_MASK) && keys_empty;
+    bool chord_fired = cur_chord && !prev_chord_match;
+    prev_chord_match = cur_chord;
+
+    /* --- Double-tap LCtrl ---
+       Detect: clean LCtrl press, clean release, second clean LCtrl
+       press, all within DOUBLE_TAP_WINDOW_US. "Clean" means only LCtrl
+       in the modifier byte and no keys held. Any deviation (another
+       modifier added, another key pressed, Ctrl combined with anything)
+       aborts the in-progress detection. */
+    bool ctrl_bit  = (r->modifier & KEYBOARD_MODIFIER_LEFTCTRL) != 0;
+    bool ctrl_solo = (r->modifier == KEYBOARD_MODIFIER_LEFTCTRL) && keys_empty;
+    bool fully_empty = (r->modifier == 0) && keys_empty;
+    bool dt_fired = false;
+
+    switch (dt_left_ctrl.state) {
+        case DT_IDLE:
+            /* Require a press-edge: previous report had no LCtrl, this
+               one has LCtrl alone. Prevents "Ctrl+C released, Ctrl
+               still held alone" from starting a tap pattern. */
+            if (ctrl_solo && !dt_left_ctrl.prev_ctrl) {
+                dt_left_ctrl.state = DT_FIRST_HELD;
+            }
+            break;
+
+        case DT_FIRST_HELD:
+            if (fully_empty) {
+                dt_left_ctrl.state = DT_FIRST_RELEASED;
+                dt_left_ctrl.release_us = now_us;
+            } else if (!ctrl_solo) {
+                /* Another key or modifier joined LCtrl -- abandon. */
+                dt_left_ctrl.state = DT_IDLE;
+            }
+            break;
+
+        case DT_FIRST_RELEASED:
+            if (ctrl_solo && !dt_left_ctrl.prev_ctrl) {
+                if ((now_us - dt_left_ctrl.release_us) < DOUBLE_TAP_WINDOW_US) {
+                    dt_left_ctrl.state = DT_IDLE;
+                    dt_fired = true;
+                } else {
+                    /* Window expired; treat as fresh first press. */
+                    dt_left_ctrl.state = DT_FIRST_HELD;
+                }
+            } else if (!fully_empty && !ctrl_solo) {
+                /* Any other activity within the window -- abandon. */
+                dt_left_ctrl.state = DT_IDLE;
+            }
+            break;
+    }
+    dt_left_ctrl.prev_ctrl = ctrl_bit;
+    return chord_fired || dt_fired;
+}
+
 /* Apply runtime config overrides to the static hotkeys[] table. Right
    now this is just the screen-lock trigger combo (config-driven so the
    user can rebind via flash config / web UI). Call after load_config
@@ -341,6 +446,15 @@ void process_keyboard_report(uint8_t *raw_report, int length, uint8_t itf, hid_i
         /* And pass the key to the output PC if configured to do so. */
         if (!hotkey->pass_to_os)
             return;
+    }
+
+    /* Temporal / strict-chord output-toggle patterns (double-tap LCtrl,
+       LAlt+LCtrl chord). These are pass-through -- the Ctrl/Alt keys
+       still go to the OS in send_key below, so Ctrl+anything shortcuts
+       keep working. The pattern just triggers an output switch alongside. */
+    if (detect_output_toggle_patterns(&new_report, time_us_32())) {
+        blink_led(state);
+        output_toggle_hotkey_handler(state, &new_report);
     }
 
     /* This method will decide if the key gets queued locally or sent through UART */
