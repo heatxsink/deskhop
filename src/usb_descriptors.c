@@ -14,7 +14,6 @@
 #include "tusb.h"
 #ifdef DH_PASSTHROUGH
 #include "passthrough.h"
-#include "passthrough_uart.h"
 #endif
 
 //--------------------------------------------------------------------+
@@ -393,12 +392,6 @@ void passthrough_tick_unmount_debounce(void) {
     if (time_us_64() - passthrough_unmount_at_us < PASSTHROUGH_UNMOUNT_DEBOUNCE_US) return;
     passthrough_unmount_at_us = 0;
     if (global_state.trackpad_attached) {
-        /* Tell the other Pico the trackpad is gone so it can drop its
-           mirrored descriptor cache. No-op in sticky mode (this whole
-           function is gated by an unreachable timer comparison there)
-           but kept correct for the non-sticky path. */
-        send_value(0, TRACKPAD_PRESENCE_MSG);
-
         passthrough_clear_apple_descriptor();
         global_state.trackpad_attached    = false;
         global_state.reenumerate_pending  = true;
@@ -408,22 +401,6 @@ void passthrough_tick_unmount_debounce(void) {
 uint8_t const *passthrough_apple_hid_descriptor(uint16_t *out_len) {
     if (out_len) *out_len = apple_hid_descriptor_len;
     return apple_hid_descriptor;
-}
-
-/* Phase 2B receive-side hook. The host-port Pico chunks its trackpad's
-   HID descriptor over UART when the trackpad mounts; the reassembled
-   buffer lands here and we cache it locally. Phase 2C uses this cache
-   to spoof Apple identity when the active output flips to this side. */
-static void passthrough_on_remote_descriptor(const uint8_t *data, uint16_t len) {
-#ifdef DH_DEBUG_TRACKPAD
-    dh_debug_printf("PASSTHROUGH: remote descriptor received (%u bytes)\n", len);
-#endif
-    passthrough_cache_apple_descriptor(data, len);
-}
-
-void passthrough_init(void) {
-    passthrough_uart_register(TRACKPAD_DESC_CHUNK_MSG,
-                              passthrough_on_remote_descriptor);
 }
 #endif /* DH_PASSTHROUGH */
 

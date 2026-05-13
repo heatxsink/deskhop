@@ -69,9 +69,4 @@ extern uint64_t passthrough_unmount_at_us;
    Sticky mode trades auto-revert-on-unplug for a stable host identity. */
 void passthrough_tick_unmount_debounce(void);
 
-/* One-shot init at boot. Registers the receiver-side reassembly callback
-   for TRACKPAD_DESC_CHUNK_MSG so a descriptor sent by the host-port Pico
-   lands in our local cache. Called from initial_setup. */
-void passthrough_init(void);
-
 #endif /* DH_PASSTHROUGH */
