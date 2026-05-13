@@ -62,12 +62,6 @@ void handle_sync_borders_msg(uart_packet_t *, device_t *);
 void handle_wipe_config_msg(uart_packet_t *, device_t *);
 void handle_write_fw_msg(uart_packet_t *, device_t *);
 
-#ifdef DH_PASSTHROUGH
-void handle_trackpad_presence_msg(uart_packet_t *, device_t *);
-void handle_trackpad_desc_chunk_msg(uart_packet_t *, device_t *);
-void handle_trackpad_frame_chunk_msg(uart_packet_t *, device_t *);
-#endif
-
 /*==============================================================================
  *  Output Control
  *  Functions related to managing the active output.

@@ -92,7 +92,6 @@ set(COMMON_SOURCES
   ${SRC_DIR}/magic_trackpad.c
   ${SRC_DIR}/magic_trackpad_tap.c
   ${SRC_DIR}/magic_trackpad_gestures.c
-  ${SRC_DIR}/passthrough_uart.c
   ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/dcd_pio_usb.c
   ${PICO_TINYUSB_PATH}/src/portable/raspberrypi/pio_usb/hcd_pio_usb.c
 )
