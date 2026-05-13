@@ -10,10 +10,6 @@
  */
 
 #include "main.h"
-#ifdef DH_PASSTHROUGH
-#include "passthrough.h"
-#include "passthrough_uart.h"
-#endif
 
 /* =================================================== *
  * ============  Hotkey Handler Routines  ============ *
@@ -359,48 +355,6 @@ void handle_response_byte_msg(uart_packet_t *packet, device_t *state) {
     state->fw.address += sizeof(uint32_t);
     state->fw.byte_done = true;
 }
-
-#ifdef DH_PASSTHROUGH
-/* Phase 2A: Magic Trackpad symmetric passthrough plumbing.
-
-   The host-port Pico sends TRACKPAD_PRESENCE_MSG when the trackpad
-   mounts/unmounts on its host port, and (in 2B) the descriptor over
-   TRACKPAD_DESC_CHUNK_MSG. The other side caches this so it knows when
-   to spoof Apple identity locally. Frame forwarding (2C) reuses the
-   same chunking transport.
-
-   In Phase 2A no behavior is wired in yet -- presence updates a state
-   flag; chunk handlers feed the reassembler but no consumers have
-   registered. */
-void handle_trackpad_presence_msg(uart_packet_t *packet, device_t *state) {
-    bool now_attached = (packet->data[0] != 0);
-    bool was_attached = state->trackpad_remote_attached;
-    state->trackpad_remote_attached = now_attached;
-#ifdef DH_DEBUG_TRACKPAD
-    dh_debug_printf("trackpad_remote_attached=%u\n",
-                    state->trackpad_remote_attached ? 1 : 0);
-#endif
-    /* Remote trackpad just disappeared. If we don't have a local trackpad
-       either, our mirrored descriptor cache is stale -- drop it and ask
-       core0 to re-enumerate so the host stops seeing the Apple spoof.
-       With a local trackpad the cache is sourced from there and a remote
-       absence has no bearing on the spoof. */
-    if (was_attached && !now_attached && !state->trackpad_attached) {
-        passthrough_clear_apple_descriptor();
-        state->reenumerate_pending = true;
-    }
-}
-
-void handle_trackpad_desc_chunk_msg(uart_packet_t *packet, device_t *state) {
-    (void)state;
-    passthrough_uart_feed_chunk(TRACKPAD_DESC_CHUNK_MSG, packet->data);
-}
-
-void handle_trackpad_frame_chunk_msg(uart_packet_t *packet, device_t *state) {
-    (void)state;
-    passthrough_uart_feed_chunk(TRACKPAD_FRAME_CHUNK_MSG, packet->data);
-}
-#endif /* DH_PASSTHROUGH */
 
 /* Process a request to read a firmware package from flash */
 void handle_heartbeat_msg(uart_packet_t *packet, device_t *state) {

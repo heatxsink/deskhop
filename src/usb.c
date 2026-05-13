@@ -14,10 +14,6 @@
 #ifdef DH_MAGIC_TRACKPAD
 #include "magic_trackpad_tap.h"
 #endif
-#ifdef DH_PASSTHROUGH
-#include "passthrough.h"
-#include "passthrough_uart.h"
-#endif
 
 _Static_assert(MAX_DEVICES <= CFG_TUH_DEVICE_MAX,
                "MAX_DEVICES must not exceed CFG_TUH_DEVICE_MAX");
@@ -98,6 +94,7 @@ void tud_hid_set_report_cb(uint8_t instance,
                            hid_report_type_t report_type,
                            uint8_t const *buffer,
                            uint16_t bufsize) {
+
     /* We received a report on the config report ID */
     if (instance == ITF_NUM_HID_VENDOR && report_id == REPORT_ID_VENDOR) {
         /* Security - only if config mode is enabled are we allowed to do anything. While the report_id
@@ -182,23 +179,6 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
         return;
 
     hid_interface_t *iface = &global_state.iface[dev_addr-1][instance];
-
-#ifdef DH_PASSTHROUGH
-    if (iface->vendor_id == APPLE_VID
-        && iface->product_id == MAGIC_TRACKPAD_PID
-        && itf_protocol == HID_ITF_PROTOCOL_MOUSE
-        && global_state.trackpad_attached) {
-        /* Defer the unmount. PIO-USB on the Pico's host port drops the
-           Magic Trackpad's connection for short windows (sub-second),
-           which would otherwise cause us to immediately re-enumerate
-           the device side back to deskhop VID/PID -- visible to the
-           host PC as the trackpad disappearing every few seconds. We
-           hold off and let usb_host_task commit the unmount only if it
-           sticks. A remount within the debounce window cancels the
-           pending unmount entirely. */
-        passthrough_unmount_at_us = time_us_64();
-    }
-#endif
 
     switch (itf_protocol) {
         case HID_ITF_PROTOCOL_KEYBOARD:
@@ -297,56 +277,8 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
     if (iface->vendor_id == APPLE_VID
         && iface->product_id == MAGIC_TRACKPAD_PID
         && itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
-#ifndef DH_PASSTHROUGH
-        /* Phase 1 / Path G translation only. In passthrough mode the
-           host's hid-magicmouse owns gesture decode and we don't run
-           the firmware-side state machines. */
         mt_gesture_init(&mt_state);
-#endif
         send_magic_trackpad_activation(dev_addr, instance);
-#ifdef DH_PASSTHROUGH
-        /* Cache the trackpad's HID report descriptor so we can re-emit
-           it as our own. The mouse-class interface (instance 1) is the
-           one whose descriptor describes the multi-touch reports
-           hid-magicmouse expects to parse, so this is the right one to
-           cache. */
-        bool was_pending_unmount = (passthrough_unmount_at_us != 0);
-        passthrough_unmount_at_us = 0;  /* cancel any pending unmount */
-#ifdef DH_DEBUG_TRACKPAD
-        dh_debug_printf("PASSTHROUGH: mount; caching Apple HID descriptor (%u bytes)%s\n",
-                        desc_len, was_pending_unmount ? " [debounce-cancel]" : "");
-#endif
-        passthrough_cache_apple_descriptor(desc_report, desc_len);
-        if (!global_state.trackpad_attached) {
-            /* Phase 2B: tell the other Pico that a trackpad is on this
-               side and ship our cached descriptor so it can prime its
-               own cache. Only on fresh mounts; debounce-cancel mounts
-               are continuations and the other side already has it. */
-            send_value(1, TRACKPAD_PRESENCE_MSG);
-            /* Fire-and-forget. A TX-queue-full at this exact moment
-               leaves the receiver without a cache until the next
-               fresh mount, which in sticky mode is "never." Logged
-               under DH_DEBUG_TRACKPAD so the failure mode is at
-               least observable; retry-on-failure is deferred to 2D. */
-            bool desc_sent = passthrough_uart_send_chunked(TRACKPAD_DESC_CHUNK_MSG,
-                                                            desc_report, desc_len);
-#ifdef DH_DEBUG_TRACKPAD
-            if (!desc_sent) {
-                dh_debug_printf("PASSTHROUGH: descriptor send FAILED "
-                                "(len=%u, TX queue full or oversize)\n",
-                                desc_len);
-            }
-#else
-            (void)desc_sent;
-#endif
-
-            global_state.trackpad_attached    = true;
-            global_state.reenumerate_pending  = true;
-        }
-        /* If was_pending_unmount, the host PC never saw us drop the
-           trackpad -- no re-enumeration needed. */
-        (void)was_pending_unmount;
-#endif
     }
 #endif
 }
@@ -391,10 +323,7 @@ static void mt_tap_drain_pending(void) {
    events. Also fires TIMEOUT events when tap timers have expired. */
 void mt_tap_idle_tick_task(device_t *state) {
     (void)state;
-#if defined(DH_MAGIC_TRACKPAD) && !defined(DH_PASSTHROUGH)
-    /* Passthrough builds let the host's hid-magicmouse drive the tap
-       state machine; the local mt_state isn't initialized and reading
-       it would produce noise. Gate the whole tick. */
+#ifdef DH_MAGIC_TRACKPAD
     uint32_t now_us = time_us_32();
     if (mt_gesture_idle_tick(&mt_state, now_us)) {
         mt_tap_drain_pending();
@@ -421,67 +350,6 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
        below so the trackpad behaves like a generic mouse until activation
        lands -- and continues to work even if activation fails for any reason. */
     if (iface->vendor_id == APPLE_VID && iface->product_id == MAGIC_TRACKPAD_PID) {
-#ifdef DH_PASSTHROUGH
-        /* Passthrough frame routing. The host's hid-magicmouse driver
-           owns every gesture, click, tap, scroll, palm-reject decision
-           -- we just transport bytes.
-            - Active output is this side: re-emit the raw Apple frame
-              to our spoofed Apple HID interface locally.
-            - Active output is the other side: chunk the raw frame and
-              forward via UART. The other Pico's frame-receive callback
-              emits it to its host.
-           Output switching is keyboard-hotkey only in passthrough mode;
-           no virtual cursor, no edge-sweep, no gesture decode here. */
-        if (itf_protocol == HID_ITF_PROTOCOL_MOUSE && len > 0) {
-            if (CURRENT_BOARD_IS_ACTIVE_OUTPUT) {
-                uint8_t report_id = report[0];
-                bool emitted = tud_hid_n_report(0, report_id, &report[1],
-                                                (uint16_t)(len - 1));
-#ifdef DH_DEBUG_TRACKPAD
-                /* Throttled (1 Hz) drop-rate logger. At 100-250 Hz steady
-                   state with a healthy host EP, drops should stay near
-                   zero. A growing drop counter signals local-host
-                   back-pressure on our spoofed Apple IN endpoint. */
-                static uint32_t local_attempts = 0, local_drops = 0, local_last_us = 0;
-                local_attempts++;
-                if (!emitted) local_drops++;
-                uint32_t now_us = time_us_32();
-                if (now_us - local_last_us > 1000000) {
-                    local_last_us = now_us;
-                    dh_debug_printf("PASSTHROUGH tx local: attempts=%lu drops=%lu\n",
-                                    (unsigned long)local_attempts,
-                                    (unsigned long)local_drops);
-                }
-#else
-                (void)emitted;
-#endif
-            } else {
-                /* Fire-and-forget. A TX-queue-full drop here is a single
-                   missed frame at 100-250 Hz -- the user sees ~10 ms of
-                   cursor stall. Tolerable; retry-on-failure not worth
-                   the queue-depth gymnastics. */
-                bool sent = passthrough_uart_send_chunked(TRACKPAD_FRAME_CHUNK_MSG,
-                                                          report, len);
-#ifdef DH_DEBUG_TRACKPAD
-                static uint32_t uart_attempts = 0, uart_drops = 0, uart_last_us = 0;
-                uart_attempts++;
-                if (!sent) uart_drops++;
-                uint32_t now_us = time_us_32();
-                if (now_us - uart_last_us > 1000000) {
-                    uart_last_us = now_us;
-                    dh_debug_printf("PASSTHROUGH tx uart: attempts=%lu drops=%lu\n",
-                                    (unsigned long)uart_attempts,
-                                    (unsigned long)uart_drops);
-                }
-#else
-                (void)sent;
-#endif
-            }
-        }
-
-        tuh_hid_receive_report(dev_addr, instance);
-        return;
-#endif
         mt_frame_t frame;
         bool consumed = false;
         if (mt_decode_report(report, len, &frame)) {
@@ -515,8 +383,8 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                is off. */
             mt_tap_drain_pending();
 
-            /* Mouse-emit path. The translated button persists for the
-               duration of the held click rather than reflecting the raw
+            /* What we report to the host: the translated button (which
+               persists for the duration of the held click), not the raw
                trackpad bit. */
             uint8_t buttons = (uint8_t)held_button;
             bool buttons_changed = (buttons != global_state.mouse_buttons);
@@ -584,6 +452,7 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
                     queue_packet((uint8_t *)&release, KEYBOARD_REPORT_MSG, KBD_REPORT_LENGTH);
                 }
             }
+
         }
         if (consumed) {
             tuh_hid_receive_report(dev_addr, instance);
