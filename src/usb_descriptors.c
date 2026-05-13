@@ -32,13 +32,24 @@ tusb_desc_device_t const desc_device = DEVICE_DESCRIPTOR(0x1209, 0xc000);
    and a Magic Trackpad is attached on the host port -- so the host PC's
    hid-magicmouse driver claims the device by VID/PID match. */
 tusb_desc_device_t const desc_device_apple = DEVICE_DESCRIPTOR(0x05ac, 0x0265);
+
+/* Apple-spoof predicate. True when a trackpad is attached locally OR
+   the other Pico has one and shipped us the descriptor. The
+   descriptor-ready check is belt-and-suspenders -- the cache must be
+   filled before we present Apple, otherwise the host would request a
+   descriptor we can't provide. */
+static inline bool passthrough_should_spoof(void) {
+    return (global_state.trackpad_attached
+            || global_state.trackpad_remote_attached)
+           && passthrough_descriptor_ready();
+}
 #endif
 
 // Invoked when received GET DEVICE DESCRIPTOR
 // Application return pointer to descriptor
 uint8_t const *tud_descriptor_device_cb(void) {
 #ifdef DH_PASSTHROUGH
-    if (global_state.trackpad_attached)
+    if (passthrough_should_spoof())
         return (uint8_t const *)&desc_device_apple;
 #endif
     if (global_state.config_mode_active)
@@ -71,7 +82,7 @@ uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
 #ifdef DH_PASSTHROUGH
     /* Passthrough: only one HID interface (instance 0) and we serve
        the trackpad's own report descriptor verbatim. */
-    if (global_state.trackpad_attached && passthrough_descriptor_ready()) {
+    if (passthrough_should_spoof()) {
         if (instance == 0)
             return passthrough_apple_hid_descriptor(NULL);
         return desc_hid_report;  /* should be unreachable */
@@ -316,8 +327,12 @@ static uint8_t  passthrough_config_descriptor[PASSTHROUGH_CONFIG_LEN];
 void passthrough_cache_apple_descriptor(uint8_t const *desc, uint16_t len) {
     if (len == 0 || len > APPLE_HID_DESC_MAX) return;
     memcpy(apple_hid_descriptor, desc, len);
-    apple_hid_descriptor_len = len;
 
+    /* Build the config descriptor BEFORE flipping descriptor-ready true,
+       so passthrough_should_spoof() never returns true on a half-built
+       buffer. Without this, core0's tud_descriptor_*_cb could read a
+       mid-rebuild passthrough_config_descriptor if it polled descriptors
+       outside the 50 ms re-enumeration window. */
     uint8_t *p = passthrough_config_descriptor;
     uint16_t total_len = PASSTHROUGH_CONFIG_LEN;
 
@@ -347,8 +362,8 @@ void passthrough_cache_apple_descriptor(uint8_t const *desc, uint16_t len) {
     *p++ = 0;                           /* bCountryCode */
     *p++ = 1;                           /* bNumDescriptors */
     *p++ = HID_DESC_TYPE_REPORT;
-    *p++ = (uint8_t)(apple_hid_descriptor_len & 0xFF);
-    *p++ = (uint8_t)(apple_hid_descriptor_len >> 8);
+    *p++ = (uint8_t)(len & 0xFF);
+    *p++ = (uint8_t)(len >> 8);
 
     /* Endpoint descriptor (interrupt IN, 1 ms poll, 64-byte max packet
        -- enough for any Apple report). EP address 0x81 to match what
@@ -358,6 +373,11 @@ void passthrough_cache_apple_descriptor(uint8_t const *desc, uint16_t len) {
     *p++ = TUSB_XFER_INTERRUPT;
     *p++ = 64; *p++ = 0;
     *p++ = 1;
+
+    /* All static buffers are now fully populated. Flip descriptor-ready
+       true LAST so the spoof predicate can't transition true on a
+       half-built passthrough_config_descriptor. */
+    apple_hid_descriptor_len = len;
 }
 
 void passthrough_clear_apple_descriptor(void) {
@@ -412,18 +432,65 @@ uint8_t const *passthrough_apple_hid_descriptor(uint16_t *out_len) {
 
 /* Phase 2B receive-side hook. The host-port Pico chunks its trackpad's
    HID descriptor over UART when the trackpad mounts; the reassembled
-   buffer lands here and we cache it locally. Phase 2C uses this cache
-   to spoof Apple identity when the active output flips to this side. */
+   buffer lands here and we cache it locally. Phase 2C extends this to
+   trigger device-side re-enumeration on receivers that don't have a
+   local trackpad -- the spoof predicate transitions false -> true on
+   the back of this cache fill, so we need the host to re-read our
+   descriptors and bind hid-magicmouse. */
 static void passthrough_on_remote_descriptor(const uint8_t *data, uint16_t len) {
 #ifdef DH_DEBUG_TRACKPAD
     dh_debug_printf("PASSTHROUGH: remote descriptor received (%u bytes)\n", len);
 #endif
     passthrough_cache_apple_descriptor(data, len);
+
+    /* With a local trackpad we're already Apple-spoofed (Phase 1 sticky).
+       Without one, this cache fill is what enables the spoof -- ask
+       core0 to drop the USB pull-up so the host re-reads descriptors. */
+    if (!global_state.trackpad_attached) {
+        global_state.reenumerate_pending = true;
+    }
+}
+
+/* Phase 2C receive-side frame emission. The host-port Pico chunks the
+   raw Apple frame over UART when this side is the active output; we
+   re-emit the bytes verbatim to our spoofed Apple HID interface.
+   hid-magicmouse on the host decodes the proprietary frame format,
+   exactly as if the trackpad were plugged in directly. */
+static void passthrough_on_remote_frame(const uint8_t *data, uint16_t len) {
+    /* Only emit when we're actually the active output AND our spoof is
+       live. The sender already gates on its own non-active status to
+       know to forward -- but the active output can flip mid-stream and
+       leave a chunk in flight, so re-check on receive. */
+    if (!CURRENT_BOARD_IS_ACTIVE_OUTPUT || !passthrough_descriptor_ready())
+        return;
+    if (len == 0) return;
+    uint8_t report_id = data[0];
+    bool emitted = tud_hid_n_report(0, report_id, &data[1], (uint16_t)(len - 1));
+#ifdef DH_DEBUG_TRACKPAD
+    /* Throttled drop-rate logger: 1 line/sec showing the running attempts
+       and drops since boot. At 100-250 Hz steady-state with a healthy
+       host EP, drops should stay near zero. A growing drop counter
+       signals host-side back-pressure on the IN endpoint. */
+    static uint32_t emit_attempts = 0, emit_drops = 0, last_log_us = 0;
+    emit_attempts++;
+    if (!emitted) emit_drops++;
+    uint32_t now_us = time_us_32();
+    if (now_us - last_log_us > 1000000) {
+        last_log_us = now_us;
+        dh_debug_printf("PASSTHROUGH rx: emit attempts=%lu drops=%lu\n",
+                        (unsigned long)emit_attempts,
+                        (unsigned long)emit_drops);
+    }
+#else
+    (void)emitted;
+#endif
 }
 
 void passthrough_init(void) {
     passthrough_uart_register(TRACKPAD_DESC_CHUNK_MSG,
                               passthrough_on_remote_descriptor);
+    passthrough_uart_register(TRACKPAD_FRAME_CHUNK_MSG,
+                              passthrough_on_remote_frame);
 }
 #endif /* DH_PASSTHROUGH */
 
@@ -431,10 +498,10 @@ uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
     (void)index; // for multiple configurations
 
 #ifdef DH_PASSTHROUGH
-    /* Passthrough takes precedence over everything else -- when an Apple
-       trackpad is on the host port and we've cached its descriptor,
-       expose ourselves as that trackpad. */
-    if (global_state.trackpad_attached && passthrough_descriptor_ready())
+    /* Passthrough takes precedence over everything else -- when a
+       trackpad exists anywhere on the deskhop and we've cached its
+       descriptor, expose ourselves as that trackpad. */
+    if (passthrough_should_spoof())
         return passthrough_config_descriptor;
 #endif
 

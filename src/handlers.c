@@ -381,11 +381,13 @@ void handle_trackpad_presence_msg(uart_packet_t *packet, device_t *state) {
                     state->trackpad_remote_attached ? 1 : 0);
 #endif
     /* Remote trackpad just disappeared. If we don't have a local trackpad
-       either, our mirrored descriptor cache is stale -- drop it. With a
-       local trackpad, the cache is sourced from there and a remote
-       absence has no bearing on its validity. */
+       either, our mirrored descriptor cache is stale -- drop it and ask
+       core0 to re-enumerate so the host stops seeing the Apple spoof.
+       With a local trackpad the cache is sourced from there and a remote
+       absence has no bearing on the spoof. */
     if (was_attached && !now_attached && !state->trackpad_attached) {
         passthrough_clear_apple_descriptor();
+        state->reenumerate_pending = true;
     }
 }
 
