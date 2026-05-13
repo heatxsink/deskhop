@@ -297,12 +297,7 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
     if (iface->vendor_id == APPLE_VID
         && iface->product_id == MAGIC_TRACKPAD_PID
         && itf_protocol == HID_ITF_PROTOCOL_MOUSE) {
-#ifndef DH_PASSTHROUGH
-        /* Phase 1 / Path G translation only. In passthrough mode the
-           host's hid-magicmouse owns gesture decode and we don't run
-           the firmware-side state machines. */
         mt_gesture_init(&mt_state);
-#endif
         send_magic_trackpad_activation(dev_addr, instance);
 #ifdef DH_PASSTHROUGH
         /* Cache the trackpad's HID report descriptor so we can re-emit
@@ -391,10 +386,7 @@ static void mt_tap_drain_pending(void) {
    events. Also fires TIMEOUT events when tap timers have expired. */
 void mt_tap_idle_tick_task(device_t *state) {
     (void)state;
-#if defined(DH_MAGIC_TRACKPAD) && !defined(DH_PASSTHROUGH)
-    /* Passthrough builds let the host's hid-magicmouse drive the tap
-       state machine; the local mt_state isn't initialized and reading
-       it would produce noise. Gate the whole tick. */
+#ifdef DH_MAGIC_TRACKPAD
     uint32_t now_us = time_us_32();
     if (mt_gesture_idle_tick(&mt_state, now_us)) {
         mt_tap_drain_pending();
@@ -435,47 +427,15 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
         if (itf_protocol == HID_ITF_PROTOCOL_MOUSE && len > 0) {
             if (CURRENT_BOARD_IS_ACTIVE_OUTPUT) {
                 uint8_t report_id = report[0];
-                bool emitted = tud_hid_n_report(0, report_id, &report[1],
-                                                (uint16_t)(len - 1));
-#ifdef DH_DEBUG_TRACKPAD
-                /* Throttled (1 Hz) drop-rate logger. At 100-250 Hz steady
-                   state with a healthy host EP, drops should stay near
-                   zero. A growing drop counter signals local-host
-                   back-pressure on our spoofed Apple IN endpoint. */
-                static uint32_t local_attempts = 0, local_drops = 0, local_last_us = 0;
-                local_attempts++;
-                if (!emitted) local_drops++;
-                uint32_t now_us = time_us_32();
-                if (now_us - local_last_us > 1000000) {
-                    local_last_us = now_us;
-                    dh_debug_printf("PASSTHROUGH tx local: attempts=%lu drops=%lu\n",
-                                    (unsigned long)local_attempts,
-                                    (unsigned long)local_drops);
-                }
-#else
-                (void)emitted;
-#endif
+                (void)tud_hid_n_report(0, report_id, &report[1],
+                                       (uint16_t)(len - 1));
             } else {
                 /* Fire-and-forget. A TX-queue-full drop here is a single
                    missed frame at 100-250 Hz -- the user sees ~10 ms of
                    cursor stall. Tolerable; retry-on-failure not worth
                    the queue-depth gymnastics. */
-                bool sent = passthrough_uart_send_chunked(TRACKPAD_FRAME_CHUNK_MSG,
-                                                          report, len);
-#ifdef DH_DEBUG_TRACKPAD
-                static uint32_t uart_attempts = 0, uart_drops = 0, uart_last_us = 0;
-                uart_attempts++;
-                if (!sent) uart_drops++;
-                uint32_t now_us = time_us_32();
-                if (now_us - uart_last_us > 1000000) {
-                    uart_last_us = now_us;
-                    dh_debug_printf("PASSTHROUGH tx uart: attempts=%lu drops=%lu\n",
-                                    (unsigned long)uart_attempts,
-                                    (unsigned long)uart_drops);
-                }
-#else
-                (void)sent;
-#endif
+                (void)passthrough_uart_send_chunked(TRACKPAD_FRAME_CHUNK_MSG,
+                                                    report, len);
             }
         }
 

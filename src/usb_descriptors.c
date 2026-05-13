@@ -374,25 +374,18 @@ void passthrough_cache_apple_descriptor(uint8_t const *desc, uint16_t len) {
     *p++ = 64; *p++ = 0;
     *p++ = 1;
 
-    /* All static buffers are now fully populated. Release-store on
-       apple_hid_descriptor_len so the buffer writes above are visible
-       to any thread that observes a non-zero length via an acquire
-       load. Pairs with the acquire load in passthrough_descriptor_ready.
-       On Cortex-M0+ the HW is sequentially-consistent so this collapses
-       to a compiler barrier; on weaker cores the atomic-store emits
-       the appropriate hardware fence. */
-    __atomic_store_n(&apple_hid_descriptor_len, len, __ATOMIC_RELEASE);
+    /* All static buffers are now fully populated. Flip descriptor-ready
+       true LAST so the spoof predicate can't transition true on a
+       half-built passthrough_config_descriptor. */
+    apple_hid_descriptor_len = len;
 }
 
 void passthrough_clear_apple_descriptor(void) {
-    __atomic_store_n(&apple_hid_descriptor_len, 0, __ATOMIC_RELEASE);
+    apple_hid_descriptor_len = 0;
 }
 
 bool passthrough_descriptor_ready(void) {
-    /* Acquire-load pairs with the release-store in
-       passthrough_cache_apple_descriptor. Ensures a true return here
-       implies all buffer writes preceding the store are visible. */
-    return __atomic_load_n(&apple_hid_descriptor_len, __ATOMIC_ACQUIRE) > 0;
+    return apple_hid_descriptor_len > 0;
 }
 
 /* Debounce state for trackpad mount/unmount. Set non-zero by
