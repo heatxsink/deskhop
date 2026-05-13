@@ -318,8 +318,22 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
                own cache. Only on fresh mounts; debounce-cancel mounts
                are continuations and the other side already has it. */
             send_value(1, TRACKPAD_PRESENCE_MSG);
-            (void)passthrough_uart_send_chunked(TRACKPAD_DESC_CHUNK_MSG,
-                                                desc_report, desc_len);
+            /* Fire-and-forget. A TX-queue-full at this exact moment
+               leaves the receiver without a cache until the next
+               fresh mount, which in sticky mode is "never." Logged
+               under DH_DEBUG_TRACKPAD so the failure mode is at
+               least observable; retry-on-failure is deferred to 2D. */
+            bool desc_sent = passthrough_uart_send_chunked(TRACKPAD_DESC_CHUNK_MSG,
+                                                            desc_report, desc_len);
+#ifdef DH_DEBUG_TRACKPAD
+            if (!desc_sent) {
+                dh_debug_printf("PASSTHROUGH: descriptor send FAILED "
+                                "(len=%u, TX queue full or oversize)\n",
+                                desc_len);
+            }
+#else
+            (void)desc_sent;
+#endif
 
             global_state.trackpad_attached    = true;
             global_state.reenumerate_pending  = true;
