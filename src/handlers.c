@@ -11,6 +11,7 @@
 
 #include "main.h"
 #ifdef DH_PASSTHROUGH
+#include "passthrough.h"
 #include "passthrough_uart.h"
 #endif
 
@@ -372,11 +373,20 @@ void handle_response_byte_msg(uart_packet_t *packet, device_t *state) {
    flag; chunk handlers feed the reassembler but no consumers have
    registered. */
 void handle_trackpad_presence_msg(uart_packet_t *packet, device_t *state) {
-    state->trackpad_remote_attached = (packet->data[0] != 0);
+    bool now_attached = (packet->data[0] != 0);
+    bool was_attached = state->trackpad_remote_attached;
+    state->trackpad_remote_attached = now_attached;
 #ifdef DH_DEBUG_TRACKPAD
     dh_debug_printf("trackpad_remote_attached=%u\n",
                     state->trackpad_remote_attached ? 1 : 0);
 #endif
+    /* Remote trackpad just disappeared. If we don't have a local trackpad
+       either, our mirrored descriptor cache is stale -- drop it. With a
+       local trackpad, the cache is sourced from there and a remote
+       absence has no bearing on its validity. */
+    if (was_attached && !now_attached && !state->trackpad_attached) {
+        passthrough_clear_apple_descriptor();
+    }
 }
 
 void handle_trackpad_desc_chunk_msg(uart_packet_t *packet, device_t *state) {

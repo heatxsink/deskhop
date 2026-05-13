@@ -16,6 +16,7 @@
 #endif
 #ifdef DH_PASSTHROUGH
 #include "passthrough.h"
+#include "passthrough_uart.h"
 #endif
 
 _Static_assert(MAX_DEVICES <= CFG_TUH_DEVICE_MAX,
@@ -312,6 +313,14 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const *desc_re
 #endif
         passthrough_cache_apple_descriptor(desc_report, desc_len);
         if (!global_state.trackpad_attached) {
+            /* Phase 2B: tell the other Pico that a trackpad is on this
+               side and ship our cached descriptor so it can prime its
+               own cache. Only on fresh mounts; debounce-cancel mounts
+               are continuations and the other side already has it. */
+            send_value(1, TRACKPAD_PRESENCE_MSG);
+            (void)passthrough_uart_send_chunked(TRACKPAD_DESC_CHUNK_MSG,
+                                                desc_report, desc_len);
+
             global_state.trackpad_attached    = true;
             global_state.reenumerate_pending  = true;
         }

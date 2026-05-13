@@ -14,6 +14,9 @@
  * ================================================== */
 
 #include "main.h"
+#ifdef DH_PASSTHROUGH
+#include "passthrough.h"
+#endif
 
 /* ================================================== *
  * Perform initial UART setup
@@ -240,6 +243,12 @@ void initial_setup(device_t *state) {
 
     /* Initialize UART queue */
     queue_init(&state->uart_tx_queue, sizeof(uart_packet_t), UART_QUEUE_LENGTH);
+
+#ifdef DH_PASSTHROUGH
+    /* Register the trackpad descriptor reassembly callback so a chunked
+       descriptor sent over UART by the host-port Pico lands in our cache. */
+    passthrough_init();
+#endif
 
     /* Setup RP2040 Core 1 */
     multicore_reset_core1();
