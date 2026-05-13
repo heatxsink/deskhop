@@ -327,8 +327,12 @@ static uint8_t  passthrough_config_descriptor[PASSTHROUGH_CONFIG_LEN];
 void passthrough_cache_apple_descriptor(uint8_t const *desc, uint16_t len) {
     if (len == 0 || len > APPLE_HID_DESC_MAX) return;
     memcpy(apple_hid_descriptor, desc, len);
-    apple_hid_descriptor_len = len;
 
+    /* Build the config descriptor BEFORE flipping descriptor-ready true,
+       so passthrough_should_spoof() never returns true on a half-built
+       buffer. Without this, core0's tud_descriptor_*_cb could read a
+       mid-rebuild passthrough_config_descriptor if it polled descriptors
+       outside the 50 ms re-enumeration window. */
     uint8_t *p = passthrough_config_descriptor;
     uint16_t total_len = PASSTHROUGH_CONFIG_LEN;
 
@@ -358,8 +362,8 @@ void passthrough_cache_apple_descriptor(uint8_t const *desc, uint16_t len) {
     *p++ = 0;                           /* bCountryCode */
     *p++ = 1;                           /* bNumDescriptors */
     *p++ = HID_DESC_TYPE_REPORT;
-    *p++ = (uint8_t)(apple_hid_descriptor_len & 0xFF);
-    *p++ = (uint8_t)(apple_hid_descriptor_len >> 8);
+    *p++ = (uint8_t)(len & 0xFF);
+    *p++ = (uint8_t)(len >> 8);
 
     /* Endpoint descriptor (interrupt IN, 1 ms poll, 64-byte max packet
        -- enough for any Apple report). EP address 0x81 to match what
@@ -369,6 +373,11 @@ void passthrough_cache_apple_descriptor(uint8_t const *desc, uint16_t len) {
     *p++ = TUSB_XFER_INTERRUPT;
     *p++ = 64; *p++ = 0;
     *p++ = 1;
+
+    /* All static buffers are now fully populated. Flip descriptor-ready
+       true LAST so the spoof predicate can't transition true on a
+       half-built passthrough_config_descriptor. */
+    apple_hid_descriptor_len = len;
 }
 
 void passthrough_clear_apple_descriptor(void) {
@@ -456,7 +465,25 @@ static void passthrough_on_remote_frame(const uint8_t *data, uint16_t len) {
         return;
     if (len == 0) return;
     uint8_t report_id = data[0];
-    (void)tud_hid_n_report(0, report_id, &data[1], (uint16_t)(len - 1));
+    bool emitted = tud_hid_n_report(0, report_id, &data[1], (uint16_t)(len - 1));
+#ifdef DH_DEBUG_TRACKPAD
+    /* Throttled drop-rate logger: 1 line/sec showing the running attempts
+       and drops since boot. At 100-250 Hz steady-state with a healthy
+       host EP, drops should stay near zero. A growing drop counter
+       signals host-side back-pressure on the IN endpoint. */
+    static uint32_t emit_attempts = 0, emit_drops = 0, last_log_us = 0;
+    emit_attempts++;
+    if (!emitted) emit_drops++;
+    uint32_t now_us = time_us_32();
+    if (now_us - last_log_us > 1000000) {
+        last_log_us = now_us;
+        dh_debug_printf("PASSTHROUGH rx: emit attempts=%lu drops=%lu\n",
+                        (unsigned long)emit_attempts,
+                        (unsigned long)emit_drops);
+    }
+#else
+    (void)emitted;
+#endif
 }
 
 void passthrough_init(void) {
