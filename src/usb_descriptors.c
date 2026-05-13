@@ -374,9 +374,12 @@ void passthrough_cache_apple_descriptor(uint8_t const *desc, uint16_t len) {
     *p++ = 64; *p++ = 0;
     *p++ = 1;
 
-    /* All static buffers are now fully populated. Flip descriptor-ready
-       true LAST so the spoof predicate can't transition true on a
-       half-built passthrough_config_descriptor. */
+    /* All static buffers are now fully populated. Release-fence so the
+       compiler can't reorder any of the buffer writes past the flag
+       flip, and the (sequentially-consistent) Cortex-M0+ memory model
+       guarantees core0 observes the writes in program order before
+       seeing descriptor_ready=true. */
+    __atomic_thread_fence(__ATOMIC_RELEASE);
     apple_hid_descriptor_len = len;
 }
 
@@ -385,7 +388,12 @@ void passthrough_clear_apple_descriptor(void) {
 }
 
 bool passthrough_descriptor_ready(void) {
-    return apple_hid_descriptor_len > 0;
+    /* Acquire-fence pairs with the release-fence in
+       passthrough_cache_apple_descriptor. Ensures a true return here
+       implies all buffer writes preceding the flag flip are visible. */
+    bool ready = apple_hid_descriptor_len > 0;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    return ready;
 }
 
 /* Debounce state for trackpad mount/unmount. Set non-zero by
