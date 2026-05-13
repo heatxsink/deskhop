@@ -374,26 +374,25 @@ void passthrough_cache_apple_descriptor(uint8_t const *desc, uint16_t len) {
     *p++ = 64; *p++ = 0;
     *p++ = 1;
 
-    /* All static buffers are now fully populated. Release-fence so the
-       compiler can't reorder any of the buffer writes past the flag
-       flip, and the (sequentially-consistent) Cortex-M0+ memory model
-       guarantees core0 observes the writes in program order before
-       seeing descriptor_ready=true. */
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    apple_hid_descriptor_len = len;
+    /* All static buffers are now fully populated. Release-store on
+       apple_hid_descriptor_len so the buffer writes above are visible
+       to any thread that observes a non-zero length via an acquire
+       load. Pairs with the acquire load in passthrough_descriptor_ready.
+       On Cortex-M0+ the HW is sequentially-consistent so this collapses
+       to a compiler barrier; on weaker cores the atomic-store emits
+       the appropriate hardware fence. */
+    __atomic_store_n(&apple_hid_descriptor_len, len, __ATOMIC_RELEASE);
 }
 
 void passthrough_clear_apple_descriptor(void) {
-    apple_hid_descriptor_len = 0;
+    __atomic_store_n(&apple_hid_descriptor_len, 0, __ATOMIC_RELEASE);
 }
 
 bool passthrough_descriptor_ready(void) {
-    /* Acquire-fence pairs with the release-fence in
+    /* Acquire-load pairs with the release-store in
        passthrough_cache_apple_descriptor. Ensures a true return here
-       implies all buffer writes preceding the flag flip are visible. */
-    bool ready = apple_hid_descriptor_len > 0;
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    return ready;
+       implies all buffer writes preceding the store are visible. */
+    return __atomic_load_n(&apple_hid_descriptor_len, __ATOMIC_ACQUIRE) > 0;
 }
 
 /* Debounce state for trackpad mount/unmount. Set non-zero by
