@@ -154,15 +154,12 @@ hotkey_combo_t *check_all_hotkeys(hid_keyboard_report_t *report, device_t *state
 }
 
 /* ============================================================ *
- * Output-toggle patterns: double-tap Left Ctrl, or Left Alt + Left
- * Ctrl held alone. Implemented separately from the hotkeys[] table
- * because they're temporal patterns (double-tap timing) and strict
- * chord matches (key_count=0 in the table matches any report with
- * the modifiers set, even alongside other keys -- way too loose for
- * an output-toggle gesture).
+ * Output-toggle pattern: double-tap Left Ctrl. Implemented separately
+ * from the hotkeys[] table because it's a temporal pattern (timing
+ * across multiple reports), not a single-report match.
  *
- * The Ctrl key is NOT consumed by either pattern. The OS still sees
- * every Ctrl press; we just observe the pattern alongside.
+ * The Ctrl key is NOT consumed. The OS still sees every Ctrl press;
+ * we just observe the pattern alongside.
  * ============================================================ */
 
 #define DOUBLE_TAP_WINDOW_US 300000  /* 300 ms */
@@ -179,11 +176,6 @@ static struct {
     bool               prev_ctrl;   /* LCtrl bit in the previous report */
 } dt_left_ctrl = { .state = DT_IDLE };
 
-/* Edge-triggered: true on the report where the chord first matches,
-   false on subsequent reports while the chord is held. Reset on any
-   report that doesn't match. */
-static bool prev_chord_match;
-
 static bool report_keys_empty(const hid_keyboard_report_t *r) {
     for (int i = 0; i < KEYS_IN_USB_REPORT; i++) {
         if (r->keycode[i] != 0)
@@ -192,28 +184,16 @@ static bool report_keys_empty(const hid_keyboard_report_t *r) {
     return true;
 }
 
-/* Returns true if this report triggers an output toggle via either the
-   double-tap-LCtrl or the LAlt+LCtrl-chord pattern. */
+/* Returns true if this report completes a double-tap of left Ctrl. */
 static bool detect_output_toggle_patterns(const hid_keyboard_report_t *r,
                                           uint32_t now_us) {
     bool keys_empty = report_keys_empty(r);
 
-    /* --- LAlt + LCtrl strict chord ---
-       Modifier byte equals exactly LAlt|LCtrl, zero other modifiers,
-       zero keys. Edge-triggered so we fire once when the chord first
-       engages, not on every poll while it's held. */
-    const uint8_t CHORD_MASK = KEYBOARD_MODIFIER_LEFTALT
-                             | KEYBOARD_MODIFIER_LEFTCTRL;
-    bool cur_chord = (r->modifier == CHORD_MASK) && keys_empty;
-    bool chord_fired = cur_chord && !prev_chord_match;
-    prev_chord_match = cur_chord;
-
-    /* --- Double-tap LCtrl ---
-       Detect: clean LCtrl press, clean release, second clean LCtrl
-       press, all within DOUBLE_TAP_WINDOW_US. "Clean" means only LCtrl
-       in the modifier byte and no keys held. Any deviation (another
-       modifier added, another key pressed, Ctrl combined with anything)
-       aborts the in-progress detection. */
+    /* Detect: clean LCtrl press, clean release, second clean LCtrl press,
+       all within DOUBLE_TAP_WINDOW_US. "Clean" means only LCtrl in the
+       modifier byte and no keys held. Any deviation (another modifier
+       added, another key pressed, Ctrl combined with anything) aborts
+       the in-progress detection. */
     bool ctrl_bit  = (r->modifier & KEYBOARD_MODIFIER_LEFTCTRL) != 0;
     bool ctrl_solo = (r->modifier == KEYBOARD_MODIFIER_LEFTCTRL) && keys_empty;
     bool fully_empty = (r->modifier == 0) && keys_empty;
@@ -255,7 +235,7 @@ static bool detect_output_toggle_patterns(const hid_keyboard_report_t *r,
             break;
     }
     dt_left_ctrl.prev_ctrl = ctrl_bit;
-    return chord_fired || dt_fired;
+    return dt_fired;
 }
 
 /* Apply runtime config overrides to the static hotkeys[] table. Right
@@ -448,8 +428,7 @@ void process_keyboard_report(uint8_t *raw_report, int length, uint8_t itf, hid_i
             return;
     }
 
-    /* Temporal / strict-chord output-toggle patterns (double-tap LCtrl,
-       LAlt+LCtrl chord). These are pass-through -- the Ctrl/Alt keys
+    /* Double-tap-LCtrl output-toggle. Pass-through -- the Ctrl keys
        still go to the OS in send_key below, so Ctrl+anything shortcuts
        keep working. The pattern just triggers an output switch alongside. */
     if (detect_output_toggle_patterns(&new_report, time_us_32())) {
